@@ -13,6 +13,7 @@ import {
   EyeOff,
   MapPin,
   RotateCcw,
+  Search,
   Settings2,
   SlidersHorizontal,
   Trophy,
@@ -95,12 +96,26 @@ interface ScheduleTabProps {
   onArmDualClashAlarms: (clash: ClashPair) => void;
   onExportSingleCalendarEvent: (event: {
     id: string;
+    parentId?: string;
+    sport?: 'FOOTBALL' | 'F1';
     title: string;
     description: string;
     location: string;
     startTimeISO: string;
     durationMinutes: number;
+    mode?: 'ICS' | 'GOOGLE_CALENDAR';
   }) => void;
+  onExportArmedSessionsICS?: () => void;
+  onExportFullScheduleICS?: (
+    customEvents?: {
+      id: string;
+      title: string;
+      description: string;
+      location: string;
+      startTimeISO: string;
+      durationMinutes: number;
+    }[]
+  ) => void;
   clashSettings?: ClashDetectorSettings;
   onUpdateClashSettings?: (
     updater: (prev: ClashDetectorSettings) => ClashDetectorSettings
@@ -121,17 +136,22 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
   onToggleSamsungAlarm,
   onArmDualClashAlarms,
   onExportSingleCalendarEvent,
+  onExportArmedSessionsICS,
+  onExportFullScheduleICS,
   clashSettings: externalClashSettings,
   onUpdateClashSettings,
 }) => {
-  const [timeWindow, setTimeWindow] = useState<TimeWindow>('ALL_UPCOMING');
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>('THIS_WEEK');
   const [sportFilter, setSportFilter] = useState<SportFilter>('ALL');
   const [selectedTeamCode, setSelectedTeamCode] = useState<string>('ALL_TEAMS');
+  const [teamSearchQuery, setTeamSearchQuery] = useState<string>('');
   const [localClashSettings, setLocalClashSettings] =
     useState<ClashDetectorSettings>(DEFAULT_CLASH_SETTINGS);
-  const [clashHubExpanded, setClashHubExpanded] = useState<boolean>(true);
+  const [clashHubExpanded, setClashHubExpanded] = useState<boolean>(false);
   const [showClashManager, setShowClashManager] = useState<boolean>(false);
   const [showAllClashes, setShowAllClashes] = useState<boolean>(false);
+  const [showExportCalendarModal, setShowExportCalendarModal] =
+    useState<boolean>(false);
 
   const effectiveClashSettings = externalClashSettings ?? localClashSettings;
   const updateClashSettings = (
@@ -207,9 +227,17 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
         timeWindow,
         sportFilter,
         selectedTeamCode,
-        followedTeamCodes
+        followedTeamCodes,
+        teamSearchQuery
       ),
-    [matches, timeWindow, sportFilter, selectedTeamCode, followedTeamCodes]
+    [
+      matches,
+      timeWindow,
+      sportFilter,
+      selectedTeamCode,
+      followedTeamCodes,
+      teamSearchQuery,
+    ]
   );
 
   // For Formula 1 calendar display, use the selected season's full calendar enriched with any synced sessions
@@ -234,6 +262,26 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
 
   const filteredWeekends = useMemo(() => {
     if (sportFilter === 'FOOTBALL') return [];
+    const normalizedQuery = teamSearchQuery.trim().toLowerCase();
+    if (normalizedQuery.length > 0) {
+      const f1Teams = allTeams.filter((t) => t.sport === 'F1');
+      const matchesAnyF1Constructor = f1Teams.some(
+        (t) =>
+          t.name.toLowerCase().includes(normalizedQuery) ||
+          t.shortName.toLowerCase().includes(normalizedQuery) ||
+          t.code.toLowerCase() === normalizedQuery
+      );
+      if (matchesAnyF1Constructor) {
+        return activeF1SeasonCalendar;
+      }
+      return activeF1SeasonCalendar.filter(
+        (w) =>
+          w.grandPrixName.toLowerCase().includes(normalizedQuery) ||
+          w.circuitName.toLowerCase().includes(normalizedQuery) ||
+          (w.hostName || '').toLowerCase().includes(normalizedQuery) ||
+          w.city.toLowerCase().includes(normalizedQuery)
+      );
+    }
     if (selectedF1Season !== 2026) {
       return activeF1SeasonCalendar;
     }
@@ -261,6 +309,8 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
     selectedTeamCode,
     f1ConstructorCodes,
     selectedF1Season,
+    teamSearchQuery,
+    allTeams,
   ]);
 
   // Adjustable Clash Detector (Match × Match, Match × F1, or All Collisions)
@@ -405,7 +455,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
         <div
           role="tablist"
           aria-label="Schedule Time Window"
-          className="grid grid-cols-4 bg-[#0A0A0C] p-1 rounded-xl border border-[#1E2028] gap-0.5"
+          className="grid grid-cols-4 bg-[#0A0A0C] p-1 rounded-xl border border-[#1E2028] gap-1"
         >
           {(
             [
@@ -423,7 +473,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 role="tab"
                 aria-selected={active}
                 onClick={() => setTimeWindow(tab.id)}
-                className={`min-h-[32px] px-1.5 py-1 text-[11px] font-semibold rounded-lg transition-colors whitespace-nowrap ${
+                className={`min-h-[32px] px-1 py-1 text-[10px] min-[380px]:text-[11px] font-semibold rounded-lg transition-colors truncate ${
                   active
                     ? 'bg-[#181A20] text-[#F8FAFC] shadow-sm font-bold'
                     : 'text-[#8E95A5] hover:text-[#F8FAFC]'
@@ -433,6 +483,36 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
               </button>
             );
           })}
+        </div>
+
+        {/* Universal Team Fixture Search Bar */}
+        <div className="relative flex items-center">
+          <Search className="w-3.5 h-3.5 text-[#8E95A5] absolute left-3 pointer-events-none" />
+          <input
+            type="text"
+            value={teamSearchQuery}
+            onChange={(e) => setTeamSearchQuery(e.target.value)}
+            placeholder="Search team fixtures (e.g., Man City, Manchester City, City, Blasters, East Bengal...)"
+            aria-label="Search fixtures by team name"
+            data-testid="schedule-team-search-input"
+            className="w-full h-9 pl-8 pr-20 rounded-xl bg-[#0A0A0C] border border-[#1E2028] focus:border-emerald-400/60 focus:outline-none text-xs text-[#F8FAFC] placeholder:text-[#8E95A5]/75 transition-colors"
+          />
+          {teamSearchQuery.trim().length > 0 && (
+            <div className="absolute right-2 flex items-center gap-1">
+              <span className="px-1.5 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 tabular-nums">
+                {filteredMatches.length}
+              </span>
+              <button
+                type="button"
+                onClick={() => setTeamSearchQuery('')}
+                aria-label="Clear team search"
+                data-testid="clear-team-search-btn"
+                className="w-6 h-6 rounded-lg bg-[#181A20] border border-[#1E2028] flex items-center justify-center text-[#8E95A5] hover:text-[#F8FAFC]"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Sport & Favorite Clubs Quick Filter Strip */}
@@ -485,6 +565,21 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
             My Favorites
           </button>
 
+          <button
+            type="button"
+            data-testid="open-export-calendar-modal-btn"
+            onClick={() => setShowExportCalendarModal(true)}
+            className="min-h-[32px] px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors bg-[#181A20] text-[#F8FAFC] border border-[#1E2028] hover:border-emerald-400/50 flex items-center gap-1.5"
+          >
+            <CalendarPlus className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span>Export Calendar</span>
+            {armedAlarms.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-md bg-amber-400/20 text-amber-300 text-[10px] font-bold tabular-nums">
+                {armedAlarms.length}
+              </span>
+            )}
+          </button>
+
           <span className="h-4 w-[1px] bg-[#1E2028] shrink-0 mx-0.5" />
 
           {followedTeamObjects.map((team) => {
@@ -521,6 +616,133 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
         </div>
       </div>
 
+      {/* BULK CALENDAR EXPORT MODAL (OPTION A: ARMED SESSIONS ONLY | OPTION B: FULL SEASON / WEEKEND SCHEDULE) */}
+      {showExportCalendarModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Export Calendar Options"
+          data-testid="bulk-export-calendar-modal"
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4"
+        >
+          <div className="w-full max-w-[430px] rounded-t-2xl sm:rounded-2xl border border-[#1E2028] bg-[#121316] text-[#F8FAFC] shadow-2xl overflow-hidden pb-[env(safe-area-inset-bottom)]">
+            <div className="px-4 py-3.5 border-b border-[#1E2028] bg-[#181A20] flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="w-7 h-7 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                  <CalendarPlus className="w-4 h-4" />
+                </span>
+                <div className="min-w-0">
+                  <h3 className="font-display text-sm font-bold text-[#F8FAFC] truncate">
+                    Export &amp; Sync Calendar (.ICS)
+                  </h3>
+                  <p className="text-[11px] text-[#8E95A5] truncate">
+                    Includes 15-minute VALARM popup reminders
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowExportCalendarModal(false)}
+                aria-label="Close Export Calendar Modal"
+                className="h-8 w-8 rounded-lg border border-[#1E2028] flex items-center justify-center text-[#8E95A5] hover:text-[#F8FAFC]"
+              >
+                <X className="w-4 h-4 stroke-[1.5]" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3">
+              {/* Option A: Export Armed Sessions Only */}
+              <button
+                type="button"
+                data-testid="export-armed-sessions-only-btn"
+                onClick={() => {
+                  setShowExportCalendarModal(false);
+                  if (onExportArmedSessionsICS) {
+                    onExportArmedSessionsICS();
+                  }
+                }}
+                className="w-full text-left p-3.5 rounded-xl border border-[#1E2028] bg-[#181A20] hover:border-amber-400/50 transition-colors space-y-1"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[#F8FAFC] flex items-center gap-1.5">
+                    <Bell className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span>Export Armed Sessions Only</span>
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/30 text-[10px] font-bold text-amber-300 tabular-nums">
+                    {armedAlarms.length} Armed
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#8E95A5] leading-relaxed">
+                  Generates a multi-event .ics file containing solely matches and F1 sessions with active/armed alerts.
+                </p>
+              </button>
+
+              {/* Option B: Export Full Season / Weekend Schedule */}
+              <button
+                type="button"
+                data-testid="export-full-schedule-btn"
+                onClick={() => {
+                  setShowExportCalendarModal(false);
+                  const upcomingMatchesToExport = (
+                    filteredMatches.length > 0 ? filteredMatches : matches
+                  )
+                    .filter(
+                      (m) =>
+                        m.liveStatus !== 'FINAL' &&
+                        m.timeWindow !== 'PAST_RESULTS'
+                    )
+                    .map((m) => ({
+                      id: m.id,
+                      title: `${m.homeTeam.name} vs ${m.awayTeam.name} (${m.competition})`,
+                      description: `${m.competition} (${m.matchweek})`,
+                      location: `${m.venue}, ${m.city}`,
+                      startTimeISO: m.startTimeISO,
+                      durationMinutes: m.durationMinutes,
+                    }));
+
+                  const upcomingF1ToExport = (
+                    filteredWeekends.length > 0 ? filteredWeekends : f1Weekends
+                  )
+                    .filter((w) => w.status !== 'COMPLETED')
+                    .flatMap((w) =>
+                      w.sessions.map((s) => ({
+                        id: s.id,
+                        title: `F1 ${w.grandPrixName} — ${s.name}`,
+                        description: `${w.officialTitle} (${s.shortLabel})`,
+                        location: `${w.circuitName}, ${w.city}`,
+                        startTimeISO: s.startTimeISO,
+                        durationMinutes: s.durationMinutes,
+                      }))
+                    );
+
+                  const combined = [
+                    ...upcomingMatchesToExport,
+                    ...upcomingF1ToExport,
+                  ];
+                  if (onExportFullScheduleICS) {
+                    onExportFullScheduleICS(combined);
+                  }
+                }}
+                className="w-full text-left p-3.5 rounded-xl border border-[#1E2028] bg-[#181A20] hover:border-emerald-400/50 transition-colors space-y-1"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[#F8FAFC] flex items-center gap-1.5">
+                    <CalendarPlus className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>Export Full Season / Weekend Schedule</span>
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-300">
+                    Multi-Event .ICS
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#8E95A5] leading-relaxed">
+                  Compiles all upcoming Football fixtures and F1 weekend sessions for your current view into a complete .ics calendar bundle.
+                </p>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Smooth non-shifting background sync skeleton bar */}
       {isSyncingLiveApi && (
         <div className="px-4" aria-live="polite">
@@ -544,34 +766,34 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
           >
             {/* Clash Header & Mode Filter */}
             <div className="p-3 bg-amber-500/10 border-b border-amber-500/20 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
+              <div className="flex items-center justify-between gap-2 overflow-hidden">
+                <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
                   <span className="w-6 h-6 rounded-lg bg-amber-400 text-[#0A0A0C] flex items-center justify-center shrink-0">
                     <AlertTriangle className="w-3.5 h-3.5 stroke-[2]" />
                   </span>
-                  <div className="min-w-0">
-                    <div className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
-                      <span>CLASH DETECTOR</span>
-                      <span>•</span>
-                      <span>
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <div className="text-[11px] font-bold text-amber-400 flex items-center gap-1 truncate">
+                      <span className="truncate">CLASH DETECTOR</span>
+                      <span className="shrink-0">•</span>
+                      <span className="shrink-0">
                         {effectiveClashSettings.enabled
                           ? `${clashes.length} OVERLAPS`
                           : 'PAUSED'}
                       </span>
                     </div>
-                    <div className="text-[11px] text-[#8E95A5] truncate">
+                    <div className="text-[10px] text-[#8E95A5] truncate">
                       Match × Match &amp; Match × F1 Collision Manager
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-1 shrink-0">
                   <button
                     type="button"
                     data-testid="clash-detector-manage-btn"
                     onClick={() => setShowClashManager((prev) => !prev)}
                     aria-expanded={showClashManager}
-                    className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1 transition-colors ${
+                    className={`px-2 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1 transition-colors shrink-0 ${
                       showClashManager
                         ? 'bg-amber-400 text-[#0A0A0C] border-amber-400 font-bold'
                         : 'border-amber-400/30 bg-[#181A20] text-[#F8FAFC] hover:border-amber-400'
@@ -585,7 +807,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                     type="button"
                     onClick={() => setClashHubExpanded((prev) => !prev)}
                     aria-expanded={clashHubExpanded}
-                    className="px-2.5 py-1 rounded-lg border border-amber-400/30 bg-[#181A20] text-[11px] font-semibold text-[#F8FAFC] flex items-center gap-1"
+                    className="px-2 py-1 rounded-lg border border-amber-400/30 bg-[#181A20] text-[11px] font-semibold text-[#F8FAFC] flex items-center gap-1 shrink-0"
                   >
                     <Tv className="w-3 h-3 stroke-[1.5] text-amber-400" />
                     <span>{clashHubExpanded ? 'Hide' : 'Show'}</span>
@@ -598,55 +820,57 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 </div>
               </div>
 
-              {/* Clash Team Scope Selector Badges (Default: My Favorites) */}
-              <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-                <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400 shrink-0 mr-0.5" />
-                {(
-                  [
-                    {
-                      id: 'FOLLOWED_ONLY' as ClashFilterMode,
-                      label: 'My Favorites Only',
-                    },
-                    {
-                      id: 'MCI_SAN_ONLY' as ClashFilterMode,
-                      label: 'Man City, Santos & Blasters',
-                    },
-                    {
-                      id: 'CUSTOM_TEAMS' as ClashFilterMode,
-                      label: 'Custom Clubs',
-                    },
-                    {
-                      id: 'ALL_MATCHES' as ClashFilterMode,
-                      label: 'All Matches',
-                    },
-                  ] as const
-                ).map((mode) => {
-                  const active = effectiveClashSettings.filterMode === mode.id;
-                  return (
-                    <button
-                      key={mode.id}
-                      type="button"
-                      onClick={() => {
-                        updateClashSettings((prev) => ({
-                          ...prev,
-                          enabled: true,
-                          filterMode: mode.id,
-                        }));
-                        if (mode.id === 'CUSTOM_TEAMS') {
-                          setShowClashManager(true);
-                        }
-                      }}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-semibold whitespace-nowrap transition-colors ${
-                        active
-                          ? 'bg-amber-400 text-[#0A0A0C] font-bold'
-                          : 'bg-[#181A20] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]'
-                      }`}
-                    >
-                      {mode.label}
-                    </button>
-                  );
-                })}
-              </div>
+              {/* Clash Team Scope Selector Badges (Visible only when expanded via Show) */}
+              {clashHubExpanded && (
+                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-amber-400 shrink-0 mr-0.5" />
+                  {(
+                    [
+                      {
+                        id: 'FOLLOWED_ONLY' as ClashFilterMode,
+                        label: 'My Favorites Only',
+                      },
+                      {
+                        id: 'MCI_SAN_ONLY' as ClashFilterMode,
+                        label: 'Man City, Santos & Blasters',
+                      },
+                      {
+                        id: 'CUSTOM_TEAMS' as ClashFilterMode,
+                        label: 'Custom Clubs',
+                      },
+                      {
+                        id: 'ALL_MATCHES' as ClashFilterMode,
+                        label: 'All Matches',
+                      },
+                    ] as const
+                  ).map((mode) => {
+                    const active = effectiveClashSettings.filterMode === mode.id;
+                    return (
+                      <button
+                        key={mode.id}
+                        type="button"
+                        onClick={() => {
+                          updateClashSettings((prev) => ({
+                            ...prev,
+                            enabled: true,
+                            filterMode: mode.id,
+                          }));
+                          if (mode.id === 'CUSTOM_TEAMS') {
+                            setShowClashManager(true);
+                          }
+                        }}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-semibold whitespace-nowrap transition-colors ${
+                          active
+                            ? 'bg-amber-400 text-[#0A0A0C] font-bold'
+                            : 'bg-[#181A20] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]'
+                        }`}
+                      >
+                        {mode.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
               {/* Expandable Clash Detector Management Drawer */}
               {showClashManager && (
@@ -1003,10 +1227,10 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                 </div>
                               </div>
 
-                              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 bg-[#181A20] rounded-xl p-2.5 border border-[#1E2028]">
+                              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 bg-[#181A20] rounded-xl p-2.5 border border-[#1E2028] overflow-hidden">
                                 {/* Left: First Football Match */}
-                                <div className="space-y-1 min-w-0">
-                                  <div className="flex items-center gap-1.5 min-w-0">
+                                <div className="space-y-1 min-w-0 overflow-hidden">
+                                  <div className="flex items-center gap-1 min-w-0 overflow-hidden">
                                     <OfficialLogo
                                       src={clash.footballInfo.homeLogo}
                                       alt={clash.footballInfo.homeName}
@@ -1016,7 +1240,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                     <span className="text-xs font-semibold text-[#F8FAFC] truncate">
                                       {clash.footballInfo.homeCode}
                                     </span>
-                                    <span className="text-[10px] text-[#8E95A5]">
+                                    <span className="text-[10px] text-[#8E95A5] shrink-0">
                                       v
                                     </span>
                                     <OfficialLogo
@@ -1042,14 +1266,14 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                 </div>
 
                                 {/* Center Badge */}
-                                <span className="px-2 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-amber-300 text-[10px] font-bold">
+                                <span className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-amber-300 text-[9px] font-bold shrink-0">
                                   {isClashTBD ? 'TBD' : 'CLASH'}
                                 </span>
 
                                 {/* Right: Second Football Match OR Formula 1 Session */}
                                 {isMatchVsMatch && clash.secondFootballInfo ? (
-                                  <div className="space-y-1 min-w-0 text-right">
-                                    <div className="flex items-center justify-end gap-1.5 min-w-0">
+                                  <div className="space-y-1 min-w-0 overflow-hidden text-right">
+                                    <div className="flex items-center justify-end gap-1 min-w-0 overflow-hidden">
                                       <OfficialLogo
                                         src={clash.secondFootballInfo.homeLogo}
                                         alt={clash.secondFootballInfo.homeName}
@@ -1061,7 +1285,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                       <span className="text-xs font-semibold text-[#F8FAFC] truncate">
                                         {clash.secondFootballInfo.homeCode}
                                       </span>
-                                      <span className="text-[10px] text-[#8E95A5]">
+                                      <span className="text-[10px] text-[#8E95A5] shrink-0">
                                         v
                                       </span>
                                       <OfficialLogo
@@ -1082,8 +1306,8 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                     </div>
                                   </div>
                                 ) : (
-                                  <div className="space-y-1 min-w-0 text-right">
-                                    <div className="flex items-center justify-end gap-1.5 min-w-0">
+                                  <div className="space-y-1 min-w-0 overflow-hidden text-right">
+                                    <div className="flex items-center justify-end gap-1.5 min-w-0 overflow-hidden">
                                       <OfficialLogo
                                         src={clash.f1Info.countryFlagUrl}
                                         alt={clash.f1Info.grandPrixName}
@@ -1265,29 +1489,59 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                 </span>
                               )}
                               {armed && !isFinished && (
-                                <Bell className="w-3 h-3 text-amber-400 stroke-[2]" />
+                                <span
+                                  data-testid={`armed-badge-${match.id}`}
+                                  className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[10px] font-bold text-amber-300 flex items-center gap-1"
+                                >
+                                  <Bell className="w-2.5 h-2.5 text-amber-400 stroke-[2.2]" />
+                                  <span>Active / Armed</span>
+                                </span>
+                              )}
+                              {!isFinished && (
+                                <button
+                                  type="button"
+                                  data-testid={`card-calendar-export-${match.id}`}
+                                  aria-label={`Add ${match.homeTeam.name} vs ${match.awayTeam.name} to Calendar`}
+                                  title="Export Event to Calendar & Arm Alert"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onExportSingleCalendarEvent({
+                                      id: match.id,
+                                      sport: 'FOOTBALL',
+                                      title: `${match.homeTeam.name} vs ${match.awayTeam.name} (${match.competition})`,
+                                      description: `${match.competition} (${match.matchweek})`,
+                                      location: `${match.venue}, ${match.city}`,
+                                      startTimeISO: match.startTimeISO,
+                                      durationMinutes: match.durationMinutes,
+                                      mode: 'ICS',
+                                    });
+                                  }}
+                                  className="h-6 w-6 rounded-md bg-[#181A20] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors"
+                                >
+                                  <CalendarPlus className="w-3 h-3" />
+                                </button>
                               )}
                             </div>
                           </div>
 
                           {/* STRICT 3-COLUMN GRID: Home | Score or Time Badge | Away */}
-                          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 min-[380px]:gap-3 overflow-hidden">
                             {/* Left (Home): Official Club Crest (24px) + Team Name */}
-                            <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="flex items-center gap-2 min-w-0 overflow-hidden">
                               <OfficialLogo
                                 src={match.homeTeam.logo}
                                 alt={match.homeTeam.name}
                                 size="sm"
                                 fallbackCode={match.homeTeam.code}
                               />
-                              <span className="text-sm font-medium text-[#F8FAFC] truncate min-w-0">
+                              <span className="text-xs min-[380px]:text-sm font-medium text-[#F8FAFC] truncate min-w-0">
                                 {match.homeTeam.name}
                               </span>
                             </div>
 
                             {/* Center (Score / Live / Time): Compact Badge */}
                             <div
-                              className={`text-xs font-semibold px-2.5 py-1 rounded-md whitespace-nowrap tabular-nums ${
+                              className={`text-[11px] min-[380px]:text-xs font-semibold px-2 min-[380px]:px-2.5 py-1 rounded-md whitespace-nowrap tabular-nums shrink-0 ${
                                 isFinished
                                   ? 'text-emerald-300 bg-emerald-500/15 border border-emerald-500/30 font-extrabold'
                                   : isLive
@@ -1309,8 +1563,8 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                             </div>
 
                             {/* Right (Away): Team Name + Official Club Crest (24px) */}
-                            <div className="flex items-center justify-end gap-2.5 min-w-0">
-                              <span className="text-sm font-medium text-[#F8FAFC] truncate text-right min-w-0">
+                            <div className="flex items-center justify-end gap-2 min-w-0 overflow-hidden">
+                              <span className="text-xs min-[380px]:text-sm font-medium text-[#F8FAFC] truncate text-right min-w-0">
                                 {match.awayTeam.name}
                               </span>
                               <OfficialLogo
@@ -1346,7 +1600,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
           aria-label="Official Formula 1 Race Calendar"
         >
           {/* Official F1 App Season Switcher Bar with Red Bottom Border */}
-          <div className="bg-[#121316] border-y border-[#1E2028] border-b-2 border-b-[#E10600] px-4 py-2.5 flex items-center justify-between">
+          <div className="bg-[#121316] border-y border-[#1E2028] border-b-2 border-b-[#E10600] px-3 py-2.5 flex items-center justify-between gap-2 overflow-hidden">
             <button
               type="button"
               onClick={() =>
@@ -1356,12 +1610,12 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
               }
               disabled={selectedF1Season === 2025}
               aria-label="Previous F1 Season"
-              className="p-1 text-[#8E95A5] hover:text-[#F8FAFC] disabled:opacity-30"
+              className="p-1 text-[#8E95A5] hover:text-[#F8FAFC] disabled:opacity-30 shrink-0"
             >
               <ChevronLeft className="w-4 h-4 stroke-[2]" />
             </button>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 min-[380px]:gap-3">
               {([2025, 2026, 2027] as const).map((yr) => {
                 const active = selectedF1Season === yr;
                 return (
@@ -1370,7 +1624,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                     type="button"
                     onClick={() => setSelectedF1Season(yr)}
                     data-testid={`f1-season-tab-${yr}`}
-                    className={`text-xs font-display font-bold tracking-wide px-2.5 py-1 rounded-md transition-colors ${
+                    className={`text-[11px] min-[380px]:text-xs font-display font-bold tracking-wide px-2 min-[380px]:px-2.5 py-1 rounded-md whitespace-nowrap transition-colors ${
                       active
                         ? 'text-[#F8FAFC] bg-[#E10600]'
                         : 'text-[#8E95A5] hover:text-[#F8FAFC]'
@@ -1391,7 +1645,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
               }
               disabled={selectedF1Season === 2027}
               aria-label="Next F1 Season"
-              className="p-1 text-[#8E95A5] hover:text-[#F8FAFC] disabled:opacity-30"
+              className="p-1 text-[#8E95A5] hover:text-[#F8FAFC] disabled:opacity-30 shrink-0"
             >
               <ChevronRight className="w-4 h-4 stroke-[2]" />
             </button>
@@ -1603,9 +1857,45 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                     DONE
                                   </span>
                                 )}
+                                {!isSessDone &&
+                                  !isSessLive &&
+                                  isAlarmArmed(sess.id) && (
+                                    <span
+                                      data-testid={`armed-badge-${sess.id}`}
+                                      className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[9px] font-bold text-amber-300 flex items-center gap-0.5"
+                                    >
+                                      <Bell className="w-2.5 h-2.5 text-amber-400" />
+                                      <span>Active / Armed</span>
+                                    </span>
+                                  )}
                                 <span className="font-bold text-[#F8FAFC] tabular-nums">
                                   {sess.istTimeLabel}
                                 </span>
+                                {!isSessDone && !isSessLive && (
+                                  <button
+                                    type="button"
+                                    data-testid={`card-calendar-export-${sess.id}`}
+                                    aria-label={`Export ${sess.name} to Calendar`}
+                                    title="Export Session to Calendar & Arm Alert"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onExportSingleCalendarEvent({
+                                        id: sess.id,
+                                        parentId: wknd.id,
+                                        sport: 'F1',
+                                        title: `F1 ${wknd.grandPrixName} — ${sess.name}`,
+                                        description: `${wknd.officialTitle} (${sess.shortLabel})`,
+                                        location: `${wknd.circuitName}, ${wknd.city}`,
+                                        startTimeISO: sess.startTimeISO,
+                                        durationMinutes: sess.durationMinutes,
+                                        mode: 'ICS',
+                                      });
+                                    }}
+                                    className="h-5 w-5 rounded bg-[#121316] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors"
+                                  >
+                                    <CalendarPlus className="w-3 h-3" />
+                                  </button>
+                                )}
                               </div>
                             </div>
                           );
@@ -1796,7 +2086,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                           <Bell className="w-3.5 h-3.5 stroke-[2]" />
                           <span>
                             {isAlarmArmed(selectedMatchModal.id)
-                              ? 'Edit Reminder'
+                              ? 'Active / Armed'
                               : 'Set Reminder'}
                           </span>
                         </button>
@@ -1806,19 +2096,41 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                           onClick={() =>
                             onExportSingleCalendarEvent({
                               id: selectedMatchModal.id,
+                              sport: 'FOOTBALL',
                               title: `${selectedMatchModal.homeTeam.name} vs ${selectedMatchModal.awayTeam.name} (${selectedMatchModal.competition})`,
                               description: `${selectedMatchModal.competition} (${selectedMatchModal.matchweek})`,
                               location: `${selectedMatchModal.venue}, ${selectedMatchModal.city}`,
                               startTimeISO: selectedMatchModal.startTimeISO,
                               durationMinutes: selectedMatchModal.durationMinutes,
+                              mode: 'GOOGLE_CALENDAR',
                             })
                           }
                           className="min-h-[40px] px-3 py-2 rounded-xl border border-[#1E2028] bg-[#181A20] text-[#F8FAFC] text-xs font-semibold flex items-center justify-center gap-1.5"
                         >
-                          <CalendarPlus className="w-3.5 h-3.5 stroke-[1.5]" />
-                          <span>Add to Calendar</span>
+                          <CalendarPlus className="w-3.5 h-3.5 stroke-[1.5] text-emerald-400" />
+                          <span>Add to Google Calendar</span>
                         </button>
                       </div>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onExportSingleCalendarEvent({
+                            id: selectedMatchModal.id,
+                            sport: 'FOOTBALL',
+                            title: `${selectedMatchModal.homeTeam.name} vs ${selectedMatchModal.awayTeam.name} (${selectedMatchModal.competition})`,
+                            description: `${selectedMatchModal.competition} (${selectedMatchModal.matchweek})`,
+                            location: `${selectedMatchModal.venue}, ${selectedMatchModal.city}`,
+                            startTimeISO: selectedMatchModal.startTimeISO,
+                            durationMinutes: selectedMatchModal.durationMinutes,
+                            mode: 'ICS',
+                          })
+                        }
+                        className="w-full min-h-[38px] px-3 py-2 rounded-xl border border-[#1E2028] bg-[#181A20] hover:border-white/20 text-[#F8FAFC] text-xs font-semibold flex items-center justify-center gap-1.5"
+                      >
+                        <CalendarPlus className="w-3.5 h-3.5 stroke-[1.5]" />
+                        <span>Download Single .ICS (15m Alarm)</span>
+                      </button>
 
                       {onToggleSamsungAlarm && (
                         <button
@@ -2060,7 +2372,9 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                   }`}
                                 >
                                   <Bell className="w-3 h-3" />
-                                  <span>{sessionArmed ? 'Armed' : 'Remind'}</span>
+                                  <span>
+                                    {sessionArmed ? 'Active / Armed' : 'Remind'}
+                                  </span>
                                 </button>
 
                                 <button
@@ -2068,15 +2382,43 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                   onClick={() =>
                                     onExportSingleCalendarEvent({
                                       id: session.id,
+                                      parentId: selectedWeekendModal.id,
+                                      sport: 'F1',
                                       title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
                                       description:
                                         selectedWeekendModal.officialTitle,
                                       location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
                                       startTimeISO: session.startTimeISO,
                                       durationMinutes: session.durationMinutes,
+                                      mode: 'GOOGLE_CALENDAR',
+                                    })
+                                  }
+                                  aria-label={`Add ${session.name} to Google Calendar`}
+                                  title="Add to Google Calendar & Arm Alert"
+                                  className="px-2 py-1 rounded-lg bg-[#121316] text-emerald-400 border border-[#1E2028] hover:text-[#F8FAFC] text-[10px] font-semibold flex items-center gap-1"
+                                >
+                                  <CalendarPlus className="w-3 h-3" />
+                                  <span>GCal</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onExportSingleCalendarEvent({
+                                      id: session.id,
+                                      parentId: selectedWeekendModal.id,
+                                      sport: 'F1',
+                                      title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
+                                      description:
+                                        selectedWeekendModal.officialTitle,
+                                      location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
+                                      startTimeISO: session.startTimeISO,
+                                      durationMinutes: session.durationMinutes,
+                                      mode: 'ICS',
                                     })
                                   }
                                   aria-label={`Export ${session.name} to Calendar`}
+                                  title="Download Single .ICS & Arm Alert"
                                   className="p-1.5 rounded-lg bg-[#121316] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]"
                                 >
                                   <CalendarPlus className="w-3.5 h-3.5" />

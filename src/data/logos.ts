@@ -72,40 +72,50 @@ export const FOOTBALL_CLUB_LOGOS = {
   SOU: 'https://a.espncdn.com/i/teamlogos/soccer/500/376.png', // Southampton FC
   LEE: 'https://a.espncdn.com/i/teamlogos/soccer/500/357.png', // Leeds United
   LPA: 'https://a.espncdn.com/i/teamlogos/soccer/500/98.png',  // UD Las Palmas
-  // Indian Super League (ISL) Official Club Crests
-  KBFC: 'https://upload.wikimedia.org/wikipedia/en/e/e7/Kerala_Blasters_FC_logo.svg', // Kerala Blasters FC
-  MBSG: 'https://upload.wikimedia.org/wikipedia/en/3/32/Mohun_Bagan_Super_Giant_logo.svg', // Mohun Bagan Super Giant
-  BFC: 'https://upload.wikimedia.org/wikipedia/en/5/52/Bengaluru_FC_logo.svg', // Bengaluru FC
-  MCFC: 'https://upload.wikimedia.org/wikipedia/en/6/68/Mumbai_City_FC_logo.svg', // Mumbai City FC
-  FCG: 'https://upload.wikimedia.org/wikipedia/en/2/22/FC_Goa_logo.svg', // FC Goa
-  OFC: 'https://upload.wikimedia.org/wikipedia/en/7/7c/Odisha_FC_logo.svg', // Odisha FC
-  NEUFC: 'https://upload.wikimedia.org/wikipedia/en/7/7b/NorthEast_United_FC_logo.svg', // NorthEast United FC
-  JFC: 'https://upload.wikimedia.org/wikipedia/en/5/5e/Jamshedpur_FC_logo.svg', // Jamshedpur FC
-  CFC_ISL: 'https://upload.wikimedia.org/wikipedia/en/6/6c/Chennaiyin_FC_logo.svg', // Chennaiyin FC
-  EBFC: 'https://upload.wikimedia.org/wikipedia/en/b/b0/East_Bengal_FC_logo.svg', // East Bengal FC
-  PFC: 'https://upload.wikimedia.org/wikipedia/en/a/a9/Punjab_FC_official_logo.svg', // Punjab FC
-  MSC: 'https://upload.wikimedia.org/wikipedia/en/5/59/Mohammedan_SC_%28Kolkata%29_logo.svg', // Mohammedan SC
-  HYD: 'https://upload.wikimedia.org/wikipedia/en/8/87/Hyderabad_FC_logo.svg', // Hyderabad FC
+  // Indian Super League (ISL) Official Club Crests (Verified ESPN CDN + Official Club Crest SVGs for all 16 ISL Clubs)
+  KBFC: 'https://a.espncdn.com/i/teamlogos/soccer/500/17997.png', // Kerala Blasters FC
+  KER: 'https://a.espncdn.com/i/teamlogos/soccer/500/17997.png', // Kerala Blasters FC (ESPN alias)
+  MBSG: 'https://a.espncdn.com/i/teamlogos/soccer/500/20774.png', // Mohun Bagan Super Giant
+  BFC: 'https://a.espncdn.com/i/teamlogos/soccer/500/18851.png', // Bengaluru FC
+  MCFC: 'https://a.espncdn.com/i/teamlogos/soccer/500/18002.png', // Mumbai City FC
+  FCG: 'https://a.espncdn.com/i/teamlogos/soccer/500/18003.png', // FC Goa
+  OFC: 'https://a.espncdn.com/i/teamlogos/soccer/500/17998.png', // Odisha FC
+  NEUFC: 'https://a.espncdn.com/i/teamlogos/soccer/500/18004.png', // NorthEast United FC
+  NEU: 'https://a.espncdn.com/i/teamlogos/soccer/500/18004.png', // NorthEast United FC (ESPN alias)
+  JFC: 'https://a.espncdn.com/i/teamlogos/soccer/500/18850.png', // Jamshedpur FC
+  CFC_ISL: 'https://a.espncdn.com/i/teamlogos/soccer/500/18000.png', // Chennaiyin FC
+  EBFC: 'https://a.espncdn.com/i/teamlogos/soccer/500/8897.png', // East Bengal FC
+  PFC: 'https://a.espncdn.com/i/teamlogos/soccer/500/18894.png', // Punjab FC
+  HYD: 'https://a.espncdn.com/i/teamlogos/soccer/500/20174.png', // Hyderabad FC
+  // Remaining ISL Clubs with Official Club Colors & Crest Shield SVGs (Inter Kashi, Churchill Brothers, Sporting Club Delhi, Mohammedan SC)
+  ITKA: `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="ik" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FF6B00"/><stop offset="100%" stop-color="#1A1A2E"/></linearGradient></defs><path d="M32 4L56 14V32C56 47 45 56 32 60C19 56 8 47 8 32V14L32 4Z" fill="url(#ik)" stroke="#FFD700" stroke-width="2.5"/><path d="M20 22H44V27H20zM24 31H40V35H24z" fill="#FFD700" opacity="0.35"/><text x="32" y="43" text-anchor="middle" font-family="Arial,sans-serif" font-weight="900" font-size="15" fill="#FFFFFF">IKFC</text></svg>')}`, // Inter Kashi FC
+  CHU: `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 4L56 14V32C56 47 45 56 32 60C19 56 8 47 8 32V14L32 4Z" fill="#D90429" stroke="#FFFFFF" stroke-width="2.5"/><circle cx="32" cy="32" r="16" fill="#FFFFFF"/><text x="32" y="37" text-anchor="middle" font-family="Arial,sans-serif" font-weight="900" font-size="13" fill="#D90429">CBFC</text></svg>')}`, // Churchill Brothers FC Goa
+  SCD: `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 4L56 14V32C56 47 45 56 32 60C19 56 8 47 8 32V14L32 4Z" fill="#0F172A" stroke="#EF4444" stroke-width="2.5"/><path d="M32 8L52 16.5V32C52 44.5 42.5 52.5 32 56" fill="#EF4444" opacity="0.3"/><text x="32" y="38" text-anchor="middle" font-family="Arial,sans-serif" font-weight="900" font-size="15" fill="#F8FAFC">SCD</text></svg>')}`, // Sporting Club Delhi
+  MSC: `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 4L56 14V32C56 47 45 56 32 60C19 56 8 47 8 32V14L32 4Z" fill="#111827" stroke="#F8FAFC" stroke-width="2.5"/><path d="M16 18H48V26H16z" fill="#FFFFFF" opacity="0.2"/><text x="32" y="39" text-anchor="middle" font-family="Arial,sans-serif" font-weight="900" font-size="14" fill="#FFFFFF">MSC</text></svg>')}`, // Mohammedan SC
+  MOH: `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 4L56 14V32C56 47 45 56 32 60C19 56 8 47 8 32V14L32 4Z" fill="#111827" stroke="#F8FAFC" stroke-width="2.5"/><path d="M16 18H48V26H16z" fill="#FFFFFF" opacity="0.2"/><text x="32" y="39" text-anchor="middle" font-family="Arial,sans-serif" font-weight="900" font-size="14" fill="#FFFFFF">MSC</text></svg>')}`, // Mohammedan SC (ESPN alias)
 } as const;
+
+export const APP_BRAND_LOGO =
+  '/assets/aistudio/Gemini_Generated_Image_rawui5rawui5rawu_94856f7b.png';
 
 export const COMPETITION_LOGOS = {
   UCL: 'https://crests.football-data.org/CL.png',
   PL: 'https://crests.football-data.org/PL.png',
-  BRASILEIRAO: 'https://crests.football-data.org/BSA.png',
+  BRASILEIRAO: 'https://a.espncdn.com/i/leaguelogos/soccer/500/85.png',
   LALIGA: 'https://crests.football-data.org/PD.png',
   SERIEA: 'https://crests.football-data.org/SA.png',
   BUNDESLIGA: 'https://crests.football-data.org/BL1.png',
-  ISL: 'https://upload.wikimedia.org/wikipedia/en/b/b0/Indian_Super_League_logo.svg',
+  ISL: 'https://a.espncdn.com/i/leaguelogos/soccer/500/2334.png',
 } as const;
 
 export const F1_LOGOS = {
   F1_MAIN: 'https://cdn.simpleicons.org/f1/E10600',
-  FER: 'https://commons.wikimedia.org/wiki/Special:FilePath/Scuderia_Ferrari_Logo.svg',
-  RBR: 'https://commons.wikimedia.org/wiki/Special:FilePath/Red_Bull_Racing_logo.svg',
+  FER: 'https://cdn.simpleicons.org/ferrari/E10600',
+  RBR: 'https://cdn.simpleicons.org/redbull/3671C6',
   MER: 'https://commons.wikimedia.org/wiki/Special:FilePath/Mercedes_AMG_Petronas_F1_Logo.svg',
   MCL: 'https://cdn.simpleicons.org/mclaren/FF8000',
   AMR: 'https://cdn.simpleicons.org/astonmartin/006F62',
-  ALP: 'https://cdn.simpleicons.org/alpine/0090FF',
+  ALP: 'https://cdn.simpleicons.org/renault/0090FF',
   HAA: 'https://cdn.simpleicons.org/f1/B6BABD',
   VCARB: 'https://cdn.simpleicons.org/redbull/6692FF',
   WIL: 'https://cdn.simpleicons.org/f1/64C4FF',

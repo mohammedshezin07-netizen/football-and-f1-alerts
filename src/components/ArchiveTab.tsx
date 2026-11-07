@@ -478,36 +478,36 @@ export const ArchiveTab: React.FC<ArchiveTabProps> = ({
                     </span>
                   </div>
 
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 overflow-hidden">
+                    <div className="flex items-center gap-2 min-w-0 overflow-hidden">
                       <OfficialLogo
                         src={item.homeTeam.logo}
                         alt={item.homeTeam.name}
                         size="sm"
                         fallbackCode={item.homeTeam.code}
                       />
-                      <span className="text-sm font-bold text-[#F8FAFC] truncate">
+                      <span className="text-xs min-[380px]:text-sm font-bold text-[#F8FAFC] truncate min-w-0">
                         {item.homeTeam.name}
                       </span>
                     </div>
 
                     {revealed ? (
-                      <div className="px-2.5 py-1 rounded-md bg-[#181A20] border border-[#1E2028] font-mono tabular-nums text-sm font-bold text-[#F8FAFC]">
+                      <div className="px-2.5 py-1 rounded-md bg-[#181A20] border border-[#1E2028] font-mono tabular-nums text-xs min-[380px]:text-sm font-bold text-[#F8FAFC] whitespace-nowrap shrink-0">
                         {item.homeTeam.score} — {item.awayTeam.score}
                       </div>
                     ) : (
                       <button
                         type="button"
                         onClick={(e) => handleToggleReveal(item.id, e)}
-                        className="px-2.5 py-1 rounded-md border border-amber-400 bg-amber-500/15 text-amber-300 font-mono text-[10px] font-bold flex items-center gap-1"
+                        className="px-2 py-1 rounded-md border border-amber-400 bg-amber-500/15 text-amber-300 font-mono text-[10px] font-bold flex items-center gap-1 whitespace-nowrap shrink-0"
                       >
                         <Eye className="w-3 h-3 stroke-[1.5]" />
                         <span>REVEAL SCORE</span>
                       </button>
                     )}
 
-                    <div className="flex items-center gap-2 min-w-0 justify-end">
-                      <span className="text-sm font-bold text-[#F8FAFC] truncate">
+                    <div className="flex items-center gap-2 min-w-0 overflow-hidden justify-end">
+                      <span className="text-xs min-[380px]:text-sm font-bold text-[#F8FAFC] truncate text-right min-w-0">
                         {item.awayTeam.name}
                       </span>
                       <OfficialLogo

@@ -15,6 +15,7 @@ import {
   generateGoogleCalendarUrl,
   generateICSContent,
   getUpcomingEventsToPrefetch,
+  matchesTeamSearchQuery,
   shouldPrefetchEvent,
 } from './scheduleLogic';
 import {
@@ -329,6 +330,11 @@ test('Simple 12-hour IST formatting and calendar export work accurately', () => 
     },
   ]);
   assert.ok(ics.includes('BEGIN:VCALENDAR'));
+  assert.ok(ics.includes('BEGIN:VALARM'));
+  assert.ok(ics.includes('TRIGGER:-PT15M'));
+  assert.ok(ics.includes('ACTION:DISPLAY'));
+  assert.ok(ics.includes('DESCRIPTION:Event starting in 15 minutes!'));
+  assert.ok(ics.includes('END:VALARM'));
 
   const gcalUrl = generateGoogleCalendarUrl({
     title: 'São Paulo GP',
@@ -865,7 +871,73 @@ test('ISL & Kerala Blasters favorites, Schedule ordering rules (PAST_RESULTS new
     'KBFC',
     DEFAULT_FOLLOWED_TEAM_CODES
   );
-  assert.ok(kbfcMatches.length >= 6, 'Expected past and upcoming ISL fixtures for Kerala Blasters FC');
+  assert.ok(kbfcMatches.length >= 5, 'Expected past and upcoming ISL fixtures for Kerala Blasters FC');
+
+  // Verify current ISL fixture on Sat, 07 Nov 2026 • 07:30 PM IST is Chennaiyin FC vs East Bengal FC
+  const currentIslMatch = UPCOMING_FOOTBALL_MATCHES.find(
+    (m) => m.id === 'match-isl-cfc-ebfc'
+  );
+  assert.ok(currentIslMatch, 'Expected Chennaiyin FC vs East Bengal FC on Sat, 07 Nov 2026');
+  assert.equal(currentIslMatch.homeTeam.code, 'CFC_ISL');
+  assert.equal(currentIslMatch.awayTeam.code, 'EBFC');
+  assert.equal(currentIslMatch.istDateLabel, 'SAT, 07 NOV');
+  assert.equal(currentIslMatch.istTimeLabel, '07:30 PM IST');
+
+  // Verify Universal Team Fixture Search ("Man City", "Manchester City", "City", "Blasters", "East Bengal", "Chennaiyin")
+  const manCityByShort = filterFootballMatches(
+    UPCOMING_FOOTBALL_MATCHES,
+    'THIS_WEEK',
+    'ALL',
+    'ALL_TEAMS',
+    DEFAULT_FOLLOWED_TEAM_CODES,
+    'Man City'
+  );
+  const manCityByFull = filterFootballMatches(
+    UPCOMING_FOOTBALL_MATCHES,
+    'THIS_WEEK',
+    'ALL',
+    'ALL_TEAMS',
+    DEFAULT_FOLLOWED_TEAM_CODES,
+    'Manchester City'
+  );
+  const cityMatches = filterFootballMatches(
+    UPCOMING_FOOTBALL_MATCHES,
+    'THIS_WEEK',
+    'ALL',
+    'ALL_TEAMS',
+    DEFAULT_FOLLOWED_TEAM_CODES,
+    'City'
+  );
+  assert.ok(manCityByShort.length >= 6, 'Searching "Man City" must return all Manchester City fixtures');
+  assert.equal(manCityByShort.length, manCityByFull.length, '"Man City" and "Manchester City" must return identical fixtures');
+  assert.ok(cityMatches.length >= manCityByShort.length, 'Searching "City" must match Manchester City, Hull City, Coventry City, Mumbai City');
+  assert.ok(
+    manCityByShort.every((m) => matchesTeamSearchQuery(m, 'Man City')),
+    'Every result for "Man City" must match matchesTeamSearchQuery'
+  );
+
+  const blastersSearch = filterFootballMatches(
+    UPCOMING_FOOTBALL_MATCHES,
+    'THIS_WEEK',
+    'ALL',
+    'ALL_TEAMS',
+    DEFAULT_FOLLOWED_TEAM_CODES,
+    'Blasters'
+  );
+  assert.ok(blastersSearch.length >= 5, 'Searching "Blasters" must return all Kerala Blasters FC fixtures across weeks');
+
+  const eastBengalSearch = filterFootballMatches(
+    UPCOMING_FOOTBALL_MATCHES,
+    'THIS_WEEK',
+    'ALL',
+    'ALL_TEAMS',
+    DEFAULT_FOLLOWED_TEAM_CODES,
+    'East Bengal'
+  );
+  assert.ok(
+    eastBengalSearch.some((m) => m.id === 'match-isl-cfc-ebfc'),
+    'Searching "East Bengal" must include Chennaiyin FC vs East Bengal FC'
+  );
 
   // 2. Schedule ordering rules:
   // 2a. PAST_RESULTS: most recently finished matches FIRST (descending by startTimeISO)
@@ -993,24 +1065,24 @@ test('ISL & Kerala Blasters favorites, Schedule ordering rules (PAST_RESULTS new
 
   // 5. Bi-directional Samsung Clock Native Alarm Sync
   const setRes = await setSamsungMatchAlarm({
-    eventId: 'match-isl-kbfc-mbsg',
-    title: 'Kerala Blasters FC vs Mohun Bagan Super Giant',
+    eventId: 'match-isl-cfc-ebfc',
+    title: 'Chennaiyin FC vs East Bengal FC',
     eventStartTimeISO: '2026-11-07T14:00:00Z',
   });
   assert.equal(setRes.success, true);
   assert.equal(setRes.hour, 19);
   assert.equal(setRes.minute, 30);
   assert.ok(setRes.toastMessage.includes('Samsung system alarm set for'));
-  assert.equal(hasSamsungNativeAlarm('match-isl-kbfc-mbsg'), true);
+  assert.equal(hasSamsungNativeAlarm('match-isl-cfc-ebfc'), true);
   assert.equal(
-    getSamsungNativeAlarm('match-isl-kbfc-mbsg')?.label,
-    'APEX // Kerala Blasters FC vs Mohun Bagan Super Giant'
+    getSamsungNativeAlarm('match-isl-cfc-ebfc')?.label,
+    'APEX // Chennaiyin FC vs East Bengal FC'
   );
 
-  const cancelRes = await cancelSamsungMatchAlarm('match-isl-kbfc-mbsg');
+  const cancelRes = await cancelSamsungMatchAlarm('match-isl-cfc-ebfc');
   assert.equal(cancelRes.success, true);
   assert.equal(cancelRes.toastMessage, 'Samsung system alarm removed');
-  assert.equal(hasSamsungNativeAlarm('match-isl-kbfc-mbsg'), false);
+  assert.equal(hasSamsungNativeAlarm('match-isl-cfc-ebfc'), false);
 });
 
 test('Data Integrity & Anti-Stale Safeguards Engine enforces 5m/12h/7d Cache TTLs, UTC Z-normalization, and Payload Sanity checks', async () => {

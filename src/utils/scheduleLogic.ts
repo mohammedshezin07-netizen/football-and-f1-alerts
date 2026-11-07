@@ -432,24 +432,167 @@ export function evaluateF1WeekendLiveStatus(
   return 'UPCOMING';
 }
 
+const TEAM_SEARCH_ALIASES: Record<string, string[]> = {
+  MCI: ['manchester city', 'man city', 'mancity', 'city', 'mci', 'mnc', 'citizens', 'sky blues'],
+  MUN: ['manchester united', 'man utd', 'man united', 'manutd', 'united', 'utd', 'mun', 'red devils'],
+  ARS: ['arsenal', 'arsenal fc', 'ars', 'gunners'],
+  LIV: ['liverpool', 'liverpool fc', 'liv', 'reds'],
+  CHE: ['chelsea', 'chelsea fc', 'che', 'blues'],
+  TOT: ['tottenham hotspur', 'tottenham', 'spurs', 'tot', 'hotspur'],
+  NEW: ['newcastle united', 'newcastle', 'newcastle utd', 'united', 'new', 'magpies'],
+  AVL: ['aston villa', 'villa', 'avl', 'villans'],
+  BHA: ['brighton & hove albion', 'brighton and hove albion', 'brighton', 'albion', 'bha', 'seagulls'],
+  NFO: ['nottingham forest', 'nottm forest', 'forest', 'nottingham', 'nfo'],
+  FUL: ['fulham', 'fulham fc', 'ful', 'cottagers'],
+  CRY: ['crystal palace', 'palace', 'cry', 'eagles'],
+  BRE: ['brentford', 'brentford fc', 'bre', 'bees'],
+  HUL: ['hull city', 'hull', 'city', 'hul', 'tigers'],
+  COV: ['coventry city', 'coventry', 'city', 'cov', 'sky blues'],
+  RMA: ['real madrid', 'real', 'madrid', 'rma', 'los blancos'],
+  BAR: ['fc barcelona', 'barcelona', 'barca', 'barça', 'bar', 'blaugrana'],
+  ATM: ['atletico madrid', 'atlético madrid', 'atletico', 'atleti', 'madrid', 'atm'],
+  VAL: ['valencia', 'valencia cf', 'val'],
+  CEL: ['celta vigo', 'celta', 'vigo', 'cel'],
+  ALA: ['deportivo alaves', 'alaves', 'ala'],
+  LPA: ['ud las palmas', 'las palmas', 'palmas', 'lpa'],
+  BAY: ['bayern munich', 'bayern munchen', 'fc bayern', 'bayern', 'munich', 'bay'],
+  BVB: ['borussia dortmund', 'dortmund', 'borussia', 'bvb'],
+  RBL: ['rb leipzig', 'leipzig', 'red bull leipzig', 'rbl'],
+  INT: ['inter milan', 'internazionale', 'inter', 'milan', 'int', 'nerazzurri'],
+  JUV: ['juventus', 'juve', 'juv'],
+  NAP: ['ssc napoli', 'napoli', 'nap'],
+  COMO: ['como 1907', 'como'],
+  PSG: ['paris saint-germain', 'paris saint germain', 'paris sg', 'paris', 'psg'],
+  PSV: ['psv eindhoven', 'psv', 'eindhoven'],
+  AEK: ['aek athens', 'aek', 'athens'],
+  FEN: ['fenerbahce', 'fenerbahçe', 'fener', 'fen'],
+  SLP: ['slavia prague', 'slavia praha', 'slavia', 'prague', 'slp'],
+  SAN: ['santos fc', 'santos', 'san', 'peixe'],
+  FLA: ['flamengo', 'cr flamengo', 'fla', 'mengao'],
+  PAL: ['palmeiras', 'se palmeiras', 'pal', 'verdao'],
+  BOT: ['botafogo', 'bot', 'fogo'],
+  GRE: ['gremio', 'grêmio', 'gre'],
+  VIT: ['vitoria', 'vitória', 'ec vitoria', 'vit'],
+  CFC: ['coritiba', 'coxa', 'cfc'],
+  BRA: ['red bull bragantino', 'rb bragantino', 'bragantino', 'bra'],
+  KBFC: ['kerala blasters fc', 'kerala blasters', 'kerala', 'blasters', 'kbfc', 'ker', 'manjappada'],
+  MBSG: ['mohun bagan super giant', 'mohun bagan sg', 'mohun bagan', 'bagan', 'mbsg', 'mariners'],
+  EBFC: ['east bengal fc', 'east bengal', 'eastbengal', 'bengal', 'ebfc', 'red and gold'],
+  CFC_ISL: ['chennaiyin fc', 'chennaiyin', 'chennai', 'cfc', 'cfc_isl', 'marina machans'],
+  BFC: ['bengaluru fc', 'bengaluru', 'bangalore', 'bfc', 'blues'],
+  MCFC: ['mumbai city fc', 'mumbai city', 'mumbai', 'city', 'mcfc', 'islanders'],
+  FCG: ['fc goa', 'goa', 'fcg', 'gaurs'],
+  OFC: ['odisha fc', 'odisha', 'ofc', 'juggernauts'],
+  NEUFC: ['northeast united fc', 'northeast united', 'northeast utd', 'northeast', 'north east', 'united', 'neufc', 'neu', 'highlanders'],
+  PFC: ['punjab fc', 'punjab', 'pfc', 'shers'],
+  JFC: ['jamshedpur fc', 'jamshedpur', 'jfc', 'men of steel'],
+  ITKA: ['inter kashi', 'kashi', 'inter', 'itka'],
+  CHU: ['churchill brothers', 'churchill bros', 'churchill', 'chu', 'red machines'],
+  SCD: ['sporting club delhi', 'sc delhi', 'sporting delhi', 'delhi', 'scd'],
+  MSC: ['mohammedan sc', 'mohammedan sporting', 'mohammedan', 'msc', 'moh', 'black panthers'],
+  HYD: ['hyderabad fc', 'hyderabad', 'hyd', 'nizams'],
+};
+
+function normalizeSearchText(input: string): string {
+  return input
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildTeamSearchablePhrases(team: { code: string; name: string }): string[] {
+  const codeUpper = (team.code || '').trim().toUpperCase();
+  const baseName = normalizeSearchText(team.name || '');
+  const strippedName = baseName
+    .replace(/\b(fc|sc|cf|ud|ssc|rb|ac|cd|ec|cr|se)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const dynamicAliases: string[] = [
+    baseName,
+    strippedName,
+    normalizeSearchText(codeUpper),
+    baseName.replace(/\s+/g, ''),
+    strippedName.replace(/\s+/g, ''),
+  ];
+
+  if (baseName.includes('manchester')) {
+    dynamicAliases.push(baseName.replace('manchester', 'man'));
+    dynamicAliases.push(strippedName.replace('manchester', 'man'));
+    dynamicAliases.push(strippedName.replace('manchester', 'man').replace(/\s+/g, ''));
+  }
+  if (baseName.includes('united')) {
+    dynamicAliases.push(baseName.replace('united', 'utd'));
+    dynamicAliases.push(strippedName.replace('united', 'utd'));
+  }
+
+  const staticAliases = (TEAM_SEARCH_ALIASES[codeUpper] || []).map(normalizeSearchText);
+  return Array.from(new Set([...dynamicAliases, ...staticAliases].filter(Boolean)));
+}
+
 /**
- * Filters Football matches by timeWindow, sportFilter, and selectedTeamCode.
+ * Checks whether a FootballMatch matches a user's team/fixture search query.
+ * Supports searching by full club name ("Manchester City", "Kerala Blasters FC", "East Bengal FC"),
+ * short/common name ("Man City", "Man Utd", "East Bengal", "Chennaiyin"),
+ * city/nickname token ("City", "Blasters", "Kerala", "Madrid", "United"), or club code ("MCI", "KBFC", "EBFC").
+ */
+export function matchesTeamSearchQuery(
+  match: FootballMatch,
+  rawQuery: string
+): boolean {
+  const query = normalizeSearchText(rawQuery || '');
+  if (!query) return true;
+
+  const compactQuery = query.replace(/\s+/g, '');
+  const queryTokens = query.split(' ').filter(Boolean);
+
+  const checkSingleTeam = (team: { code: string; name: string }): boolean => {
+    const phrases = buildTeamSearchablePhrases(team);
+    for (const phrase of phrases) {
+      if (phrase.includes(query) || phrase.replace(/\s+/g, '').includes(compactQuery)) {
+        return true;
+      }
+    }
+    const combinedCorpus = phrases.join(' ');
+    return (
+      queryTokens.length > 0 &&
+      queryTokens.every((tok) => combinedCorpus.includes(tok))
+    );
+  };
+
+  return checkSingleTeam(match.homeTeam) || checkSingleTeam(match.awayTeam);
+}
+
+/**
+ * Filters Football matches by timeWindow, sportFilter, selectedTeamCode, and optional searchQuery.
  * Ordering rules:
  * - 'PAST_RESULTS': Most recently finished matches FIRST (descending by startTimeISO).
  * - 'THIS_WEEK' / 'NEXT_WEEK': Upcoming & Live matches FIRST (ascending by startTimeISO),
  *   followed by any finished ('FINAL') matches from earlier in the week (descending by startTimeISO).
  * - 'ALL_UPCOMING' (Full Calendar): All fixtures ordered chronologically by date (ascending by startTimeISO).
+ * - When `searchQuery` is non-empty, searches across all fixtures for that team so the user immediately sees
+ *   every fixture for their searched club (upcoming/live first, then past results).
  */
 export function filterFootballMatches(
   matches: FootballMatch[],
   timeWindow: TimeWindow,
   sportFilter: SportFilter,
   selectedTeamCode: string | 'ALL_FOLLOWED' | 'ALL_TEAMS',
-  followedTeamCodes: string[]
+  followedTeamCodes: string[],
+  searchQuery: string = ''
 ): FootballMatch[] {
   if (sportFilter === 'F1') return [];
 
+  const hasSearchQuery = normalizeSearchText(searchQuery).length > 0;
+
   const filtered = matches.filter((m) => {
+    if (hasSearchQuery) {
+      return matchesTeamSearchQuery(m, searchQuery);
+    }
+
     const isFinished =
       m.liveStatus === 'FINAL' || m.timeWindow === 'PAST_RESULTS';
     const matchesWindow =
@@ -481,6 +624,22 @@ export function filterFootballMatches(
   return [...filtered].sort((a, b) => {
     const timeA = new Date(a.startTimeISO).getTime();
     const timeB = new Date(b.startTimeISO).getTime();
+
+    if (hasSearchQuery) {
+      // When searching for a team's fixtures, show Upcoming & Live fixtures first (chronological),
+      // followed by recent Completed Results (most recent first).
+      const isFinishedA =
+        a.liveStatus === 'FINAL' || a.timeWindow === 'PAST_RESULTS';
+      const isFinishedB =
+        b.liveStatus === 'FINAL' || b.timeWindow === 'PAST_RESULTS';
+      if (isFinishedA !== isFinishedB) {
+        return isFinishedA ? 1 : -1;
+      }
+      if (!isFinishedA) {
+        return timeA - timeB;
+      }
+      return timeB - timeA;
+    }
 
     if (timeWindow === 'PAST_RESULTS') {
       // Most recently finished matches FIRST
@@ -692,6 +851,11 @@ export function generateICSContent(
       `SUMMARY:${ev.title}`,
       `DESCRIPTION:${ev.description}`,
       `LOCATION:${ev.location}`,
+      'BEGIN:VALARM',
+      'TRIGGER:-PT15M',
+      'ACTION:DISPLAY',
+      'DESCRIPTION:Event starting in 15 minutes!',
+      'END:VALARM',
       'END:VEVENT'
     );
   }

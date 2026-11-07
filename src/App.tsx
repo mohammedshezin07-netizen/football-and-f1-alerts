@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   Archive,
   Bell,
@@ -42,6 +42,7 @@ import {
 import {
   buildPrefetchEntry,
   formatISTClock,
+  generateGoogleCalendarUrl,
   generateICSContent,
 } from './utils/scheduleLogic';
 import {
@@ -80,14 +81,15 @@ type ActiveTab = 'SCHEDULE' | 'LIVE' | 'STANDINGS' | 'ARCHIVE' | 'TEAMS_ALERTS';
 
 const STORAGE_KEYS = {
   THEME_DARK: 'apex_pitch_verified_v5_theme_dark',
-  FOLLOWED_TEAMS: 'apex_pitch_verified_v5_followed_teams',
+  FOLLOWED_TEAMS: 'apex_pitch_verified_v5_followed_teams_v2',
   ARMED_ALARMS: 'apex_pitch_verified_v5_armed_alarms',
+  ACTIVE_ALERTS: 'apex_active_alerts',
   SPOILER_FREE: 'apex_pitch_verified_v5_spoiler_free',
   PREFETCH_CACHE: 'apex_pitch_verified_v5_prefetch_cache',
   PLAYER_STATS_CACHE: 'apex_pitch_verified_v5_player_stats',
   DRIVER_STATS_CACHE: 'apex_pitch_verified_v5_driver_stats',
   LAST_SYNC_IST: 'apex_pitch_verified_v5_last_sync_ist',
-  MATCHES_DATA: 'apex_pitch_verified_v5_matches_data',
+  MATCHES_DATA: 'apex_pitch_verified_v5_matches_data_v2',
   FOOTBALL_STANDINGS_DATA: 'apex_pitch_verified_v5_football_standings',
   F1_WEEKENDS_DATA: 'apex_pitch_verified_v5_f1_weekends_data',
   CLASH_SETTINGS: 'apex_pitch_verified_v5_clash_settings',
@@ -299,8 +301,13 @@ export default function App() {
     timestampIST: string;
   } | null>(null);
 
+  const mainScrollRef = useRef<HTMLElement | null>(null);
+
   // Scroll to top when switching main navigation tabs
   useEffect(() => {
+    if (mainScrollRef.current) {
+      mainScrollRef.current.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+    }
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
   }, [activeTab]);
 
@@ -341,6 +348,10 @@ export default function App() {
 
   useEffect(() => {
     writeStorage(STORAGE_KEYS.ARMED_ALARMS, armedAlarms);
+    writeStorage(
+      STORAGE_KEYS.ACTIVE_ALERTS,
+      armedAlarms.map((a) => a.id)
+    );
   }, [armedAlarms]);
 
   useEffect(() => {
@@ -703,20 +714,191 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  const triggerGoogleCalendarLink = (url: string) => {
+    if (typeof document === 'undefined') return;
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const handleExportSingleCalendarEvent = (event: {
     id: string;
+    parentId?: string;
+    sport?: 'FOOTBALL' | 'F1';
     title: string;
     description: string;
     location: string;
     startTimeISO: string;
     durationMinutes: number;
+    mode?: 'ICS' | 'GOOGLE_CALENDAR';
   }) => {
-    const ics = generateICSContent([event]);
-    triggerDownloadICS(ics, `${event.id}.ics`);
+    const sport: 'FOOTBALL' | 'F1' =
+      event.sport || (event.id.startsWith('f1') ? 'F1' : 'FOOTBALL');
+
+    if (event.mode === 'GOOGLE_CALENDAR') {
+      const gcalUrl = generateGoogleCalendarUrl(event);
+      triggerGoogleCalendarLink(gcalUrl);
+    } else {
+      const ics = generateICSContent([event]);
+      triggerDownloadICS(ics, `${event.id}.ics`);
+    }
+
+    // Automatically save this event's unique ID into active alarms/alerts state & apex_active_alerts
+    setArmedAlarms((prev) => {
+      const exists = prev.some((a) => a.id === event.id);
+      if (exists) {
+        const nextIds = prev.map((a) => a.id);
+        writeStorage(STORAGE_KEYS.ACTIVE_ALERTS, nextIds);
+        return prev;
+      }
+      const newAlarm: ArmedAlarm = {
+        id: event.id,
+        parentId: event.parentId,
+        sport,
+        title: event.title,
+        subtitle: `${event.location} • ${event.description}`,
+        eventStartTimeISO: event.startTimeISO,
+        istTimeLabel: formatSimpleCardTime(event.startTimeISO),
+        leadTimeMinutes: 15,
+        soundProfile: sport === 'F1' ? 'F1_PIT_SIREN' : 'BROADCAST_CHIME',
+        customLabel: `Active / Armed • ${event.title}`,
+        createdAtISO: new Date().toISOString(),
+      };
+      const updated = [newAlarm, ...prev];
+      writeStorage(STORAGE_KEYS.ARMED_ALARMS, updated);
+      writeStorage(
+        STORAGE_KEYS.ACTIVE_ALERTS,
+        updated.map((a) => a.id)
+      );
+      return updated;
+    });
+
     setPushBanner({
-      sport: 'FOOTBALL',
-      title: 'Calendar Event Exported',
-      message: `${event.title} saved (.ics).`,
+      sport,
+      title:
+        event.mode === 'GOOGLE_CALENDAR'
+          ? 'Google Calendar Synced • Alert Armed'
+          : 'Calendar Event Exported • Alert Armed',
+      message: `${event.title} exported with 15m reminder & marked Active / Armed.`,
+      timestampIST: formatISTClock(),
+    });
+  };
+
+  const handleExportArmedSessionsICS = () => {
+    if (armedAlarms.length === 0) {
+      setPushBanner({
+        sport: 'FOOTBALL',
+        title: 'No Armed Alerts',
+        message: 'No armed alerts to export. Toggle an alert on a session first.',
+        timestampIST: formatISTClock(),
+      });
+      return;
+    }
+
+    const armedEvents = armedAlarms.map((alarm) => {
+      const matchedFootball = matches.find((m) => m.id === alarm.id);
+      if (matchedFootball) {
+        return {
+          id: matchedFootball.id,
+          title: `${matchedFootball.homeTeam.name} vs ${matchedFootball.awayTeam.name} (${matchedFootball.competition})`,
+          description: `${matchedFootball.competition} (${matchedFootball.matchweek})`,
+          location: `${matchedFootball.venue}, ${matchedFootball.city}`,
+          startTimeISO: matchedFootball.startTimeISO,
+          durationMinutes: matchedFootball.durationMinutes,
+        };
+      }
+
+      for (const wknd of f1Weekends) {
+        const matchedSession = wknd.sessions.find((s) => s.id === alarm.id);
+        if (matchedSession) {
+          return {
+            id: matchedSession.id,
+            title: `F1 ${wknd.grandPrixName} — ${matchedSession.name}`,
+            description: `${wknd.officialTitle} (${matchedSession.shortLabel})`,
+            location: `${wknd.circuitName}, ${wknd.city}`,
+            startTimeISO: matchedSession.startTimeISO,
+            durationMinutes: matchedSession.durationMinutes,
+          };
+        }
+      }
+
+      return {
+        id: alarm.id,
+        title: alarm.title,
+        description: alarm.subtitle || alarm.customLabel,
+        location: alarm.subtitle || 'APEX PITCH Schedule',
+        startTimeISO: alarm.eventStartTimeISO,
+        durationMinutes: alarm.sport === 'F1' ? 120 : 115,
+      };
+    });
+
+    const ics = generateICSContent(armedEvents);
+    triggerDownloadICS(ics, 'apex-pitch-armed-sessions.ics');
+    setPushBanner({
+      sport: armedAlarms[0]?.sport || 'FOOTBALL',
+      title: 'Armed Sessions Exported (.ics)',
+      message: `Exported ${armedEvents.length} armed session${armedEvents.length === 1 ? '' : 's'} with 15-minute popup alarms.`,
+      timestampIST: formatISTClock(),
+    });
+  };
+
+  const handleExportFullScheduleICS = (
+    customEvents?: {
+      id: string;
+      title: string;
+      description: string;
+      location: string;
+      startTimeISO: string;
+      durationMinutes: number;
+    }[]
+  ) => {
+    if (customEvents && customEvents.length > 0) {
+      const ics = generateICSContent(customEvents);
+      triggerDownloadICS(ics, 'apex-pitch-full-schedule.ics');
+      setPushBanner({
+        sport: 'F1',
+        title: 'Full Schedule Exported (.ics)',
+        message: `Exported ${customEvents.length} upcoming schedule events with 15m VALARM reminders.`,
+        timestampIST: formatISTClock(),
+      });
+      return;
+    }
+
+    const upcomingMatches = matches
+      .filter((m) => m.liveStatus !== 'FINAL' && m.timeWindow !== 'PAST_RESULTS')
+      .map((m) => ({
+        id: m.id,
+        title: `${m.homeTeam.name} vs ${m.awayTeam.name} (${m.competition})`,
+        description: `${m.competition} (${m.matchweek})`,
+        location: `${m.venue}, ${m.city}`,
+        startTimeISO: m.startTimeISO,
+        durationMinutes: m.durationMinutes,
+      }));
+
+    const upcomingF1Events = f1Weekends
+      .filter((w) => w.status !== 'COMPLETED')
+      .flatMap((w) =>
+        w.sessions.map((s) => ({
+          id: s.id,
+          title: `F1 ${w.grandPrixName} — ${s.name}`,
+          description: `${w.officialTitle} (${s.shortLabel})`,
+          location: `${w.circuitName}, ${w.city}`,
+          startTimeISO: s.startTimeISO,
+          durationMinutes: s.durationMinutes,
+        }))
+      );
+
+    const allEvents = [...upcomingMatches, ...upcomingF1Events];
+    const ics = generateICSContent(allEvents);
+    triggerDownloadICS(ics, 'apex-pitch-full-schedule.ics');
+    setPushBanner({
+      sport: 'F1',
+      title: 'Full Season / Weekend Schedule Exported',
+      message: `Exported ${allEvents.length} upcoming Football & F1 sessions (.ics).`,
       timestampIST: formatISTClock(),
     });
   };
@@ -787,19 +969,19 @@ export default function App() {
   return (
     <div
       data-theme={isDark ? 'dark' : 'light'}
-      className={`min-h-screen transition-colors duration-200 ${
+      className={`h-full w-full overflow-hidden flex flex-col transition-colors duration-200 ${
         isDark ? 'bg-[#0A0A0C] text-[#F8FAFC]' : 'bg-[#E2E8F0] text-[#0F172A]'
       }`}
     >
       {/* Native Mobile Viewport Shell Container (430px max-width on desktop, full width on mobile) */}
       <div
-        className={`max-w-[430px] mx-auto min-h-screen flex flex-col border-x relative shadow-2xl transition-colors duration-200 ${
+        className={`max-w-[430px] w-full mx-auto h-full flex-1 min-h-0 flex flex-col border-x relative shadow-2xl overflow-hidden transition-colors duration-200 ${
           isDark
             ? 'border-[#1E2028] bg-[#0A0A0C]'
             : 'border-slate-300 bg-[#F8FAFC]'
         }`}
       >
-        {/* Top Utility Bar */}
+        {/* Top Utility Bar (Permanently Docked at Top) */}
         <TopUtilityBar
           isOnline={isOnline}
           onToggleOnline={() => setIsOnline((prev) => !prev)}
@@ -817,8 +999,11 @@ export default function App() {
           onDismiss={() => setPushBanner(null)}
         />
 
-        {/* Main Tab Content Area */}
-        <main className="flex-1">
+        {/* Scrollable Main Tab Content Area */}
+        <main
+          ref={mainScrollRef}
+          className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain"
+        >
           {activeTab === 'SCHEDULE' && (
             <ScheduleTab
               matches={matches}
@@ -836,6 +1021,8 @@ export default function App() {
               onToggleSamsungAlarm={handleToggleSamsungAlarm}
               onArmDualClashAlarms={handleArmDualClashAlarms}
               onExportSingleCalendarEvent={handleExportSingleCalendarEvent}
+              onExportArmedSessionsICS={handleExportArmedSessionsICS}
+              onExportFullScheduleICS={handleExportFullScheduleICS}
               clashSettings={clashSettings}
               onUpdateClashSettings={setClashSettings}
             />
@@ -903,92 +1090,164 @@ export default function App() {
           )}
         </main>
 
-        {/* Fixed Bottom Navigation Bar (5 Tabs) with Safe-Area Gesture Bar Clearance */}
+        {/* Permanent Standard Premium Bottom Navigation Bar (Docked at Bottom on Both Mobile & Laptop) */}
         <nav
           aria-label="Primary Bottom Navigation"
-          className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[430px] z-30 bg-[#0A0A0C]/95 backdrop-blur-md border-t border-[#1E2028] grid grid-cols-5 min-h-[60px] pb-[env(safe-area-inset-bottom)]"
+          data-testid="primary-bottom-navigation"
+          className="shrink-0 w-full z-40 bg-[#0E1015] border-t border-[#1E2028] shadow-[0_-8px_24px_rgba(0,0,0,0.6)] pb-[max(env(safe-area-inset-bottom,0px),4px)]"
         >
-          <button
-            type="button"
-            onClick={() => setActiveTab('SCHEDULE')}
-            className={`flex flex-col items-center justify-center gap-0.5 transition-colors ${
-              activeTab === 'SCHEDULE'
-                ? 'text-[#F8FAFC] font-bold'
-                : 'text-[#8E95A5] hover:text-[#F8FAFC]'
-            }`}
-          >
-            <Calendar className="w-4 h-4 stroke-[1.75]" />
-            <span className="text-[10px] font-medium tracking-tight">
-              Schedule
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('LIVE')}
-            className={`flex flex-col items-center justify-center gap-0.5 transition-colors relative ${
-              activeTab === 'LIVE'
-                ? 'text-[#E10600] font-bold'
-                : 'text-[#8E95A5] hover:text-[#F8FAFC]'
-            }`}
-          >
-            <Radio className="w-4 h-4 stroke-[1.75]" />
-            <span className="text-[10px] font-medium tracking-tight">
-              Live Center
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('STANDINGS')}
-            className={`flex flex-col items-center justify-center gap-0.5 transition-colors ${
-              activeTab === 'STANDINGS'
-                ? 'text-[#F8FAFC] font-bold'
-                : 'text-[#8E95A5] hover:text-[#F8FAFC]'
-            }`}
-          >
-            <Trophy className="w-4 h-4 stroke-[1.75]" />
-            <span className="text-[10px] font-medium tracking-tight">
-              Standings
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('ARCHIVE')}
-            className={`flex flex-col items-center justify-center gap-0.5 transition-colors ${
-              activeTab === 'ARCHIVE'
-                ? 'text-[#F8FAFC] font-bold'
-                : 'text-[#8E95A5] hover:text-[#F8FAFC]'
-            }`}
-          >
-            <Archive className="w-4 h-4 stroke-[1.75]" />
-            <span className="text-[10px] font-medium tracking-tight">
-              Archive
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('TEAMS_ALERTS')}
-            className={`flex flex-col items-center justify-center gap-0.5 transition-colors relative ${
-              activeTab === 'TEAMS_ALERTS'
-                ? 'text-[#F8FAFC] font-bold'
-                : 'text-[#8E95A5] hover:text-[#F8FAFC]'
-            }`}
-          >
-            <div className="relative">
-              <Bell className="w-4 h-4 stroke-[1.75]" />
-              {armedAlarms.length > 0 && (
-                <span className="px-1 rounded-md bg-amber-400 text-black text-[8px] font-bold absolute -top-1.5 -right-2.5 tabular-nums">
-                  {armedAlarms.length}
-                </span>
+          <div className="grid grid-cols-5 items-center h-[62px] px-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab('SCHEDULE')}
+              aria-current={activeTab === 'SCHEDULE' ? 'page' : undefined}
+              className={`relative h-full flex flex-col items-center justify-center gap-1 px-1 min-w-0 overflow-hidden transition-colors ${
+                activeTab === 'SCHEDULE'
+                  ? 'text-[#F8FAFC]'
+                  : 'text-[#8E95A5] hover:text-[#F8FAFC]'
+              }`}
+            >
+              {activeTab === 'SCHEDULE' && (
+                <span className="absolute top-0 inset-x-3 h-[2.5px] rounded-b-full bg-emerald-400" />
               )}
-            </div>
-            <span className="text-[10px] font-medium tracking-tight">
-              My Teams
-            </span>
-          </button>
+              <div
+                className={`w-10 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                  activeTab === 'SCHEDULE' ? 'bg-emerald-500/15 text-emerald-400' : ''
+                }`}
+              >
+                <Calendar className="w-4 h-4 stroke-[2] shrink-0" />
+              </div>
+              <span
+                className={`text-[10px] tracking-tight leading-none truncate max-w-full ${
+                  activeTab === 'SCHEDULE' ? 'font-bold' : 'font-medium'
+                }`}
+              >
+                Schedule
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('LIVE')}
+              aria-current={activeTab === 'LIVE' ? 'page' : undefined}
+              className={`relative h-full flex flex-col items-center justify-center gap-1 px-1 min-w-0 overflow-hidden transition-colors ${
+                activeTab === 'LIVE'
+                  ? 'text-[#E10600]'
+                  : 'text-[#8E95A5] hover:text-[#F8FAFC]'
+              }`}
+            >
+              {activeTab === 'LIVE' && (
+                <span className="absolute top-0 inset-x-3 h-[2.5px] rounded-b-full bg-[#E10600]" />
+              )}
+              <div
+                className={`w-10 h-7 rounded-lg flex items-center justify-center transition-colors relative ${
+                  activeTab === 'LIVE' ? 'bg-[#E10600]/15 text-[#E10600]' : ''
+                }`}
+              >
+                <Radio className="w-4 h-4 stroke-[2] shrink-0" />
+                <span className="w-1.5 h-1.5 rounded-full bg-[#E10600] absolute top-1 right-2" />
+              </div>
+              <span
+                className={`text-[10px] tracking-tight leading-none truncate max-w-full ${
+                  activeTab === 'LIVE' ? 'font-bold text-[#F8FAFC]' : 'font-medium'
+                }`}
+              >
+                Live Center
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('STANDINGS')}
+              aria-current={activeTab === 'STANDINGS' ? 'page' : undefined}
+              className={`relative h-full flex flex-col items-center justify-center gap-1 px-1 min-w-0 overflow-hidden transition-colors ${
+                activeTab === 'STANDINGS'
+                  ? 'text-[#F8FAFC]'
+                  : 'text-[#8E95A5] hover:text-[#F8FAFC]'
+              }`}
+            >
+              {activeTab === 'STANDINGS' && (
+                <span className="absolute top-0 inset-x-3 h-[2.5px] rounded-b-full bg-emerald-400" />
+              )}
+              <div
+                className={`w-10 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                  activeTab === 'STANDINGS' ? 'bg-emerald-500/15 text-emerald-400' : ''
+                }`}
+              >
+                <Trophy className="w-4 h-4 stroke-[2] shrink-0" />
+              </div>
+              <span
+                className={`text-[10px] tracking-tight leading-none truncate max-w-full ${
+                  activeTab === 'STANDINGS' ? 'font-bold' : 'font-medium'
+                }`}
+              >
+                Standings
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('ARCHIVE')}
+              aria-current={activeTab === 'ARCHIVE' ? 'page' : undefined}
+              className={`relative h-full flex flex-col items-center justify-center gap-1 px-1 min-w-0 overflow-hidden transition-colors ${
+                activeTab === 'ARCHIVE'
+                  ? 'text-[#F8FAFC]'
+                  : 'text-[#8E95A5] hover:text-[#F8FAFC]'
+              }`}
+            >
+              {activeTab === 'ARCHIVE' && (
+                <span className="absolute top-0 inset-x-3 h-[2.5px] rounded-b-full bg-emerald-400" />
+              )}
+              <div
+                className={`w-10 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                  activeTab === 'ARCHIVE' ? 'bg-emerald-500/15 text-emerald-400' : ''
+                }`}
+              >
+                <Archive className="w-4 h-4 stroke-[2] shrink-0" />
+              </div>
+              <span
+                className={`text-[10px] tracking-tight leading-none truncate max-w-full ${
+                  activeTab === 'ARCHIVE' ? 'font-bold' : 'font-medium'
+                }`}
+              >
+                Archive
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('TEAMS_ALERTS')}
+              aria-current={activeTab === 'TEAMS_ALERTS' ? 'page' : undefined}
+              className={`relative h-full flex flex-col items-center justify-center gap-1 px-1 min-w-0 overflow-hidden transition-colors ${
+                activeTab === 'TEAMS_ALERTS'
+                  ? 'text-[#F8FAFC]'
+                  : 'text-[#8E95A5] hover:text-[#F8FAFC]'
+              }`}
+            >
+              {activeTab === 'TEAMS_ALERTS' && (
+                <span className="absolute top-0 inset-x-3 h-[2.5px] rounded-b-full bg-amber-400" />
+              )}
+              <div
+                className={`w-10 h-7 rounded-lg flex items-center justify-center transition-colors relative ${
+                  activeTab === 'TEAMS_ALERTS' ? 'bg-amber-400/15 text-amber-400' : ''
+                }`}
+              >
+                <Bell className="w-4 h-4 stroke-[2] shrink-0" />
+                {armedAlarms.length > 0 && (
+                  <span className="px-1 min-w-[14px] h-[14px] rounded-full bg-amber-400 text-[#0A0A0C] text-[8px] font-extrabold flex items-center justify-center absolute -top-0.5 right-0.5 tabular-nums">
+                    {armedAlarms.length}
+                  </span>
+                )}
+              </div>
+              <span
+                className={`text-[10px] tracking-tight leading-none truncate max-w-full ${
+                  activeTab === 'TEAMS_ALERTS' ? 'font-bold' : 'font-medium'
+                }`}
+              >
+                My Teams
+              </span>
+            </button>
+          </div>
         </nav>
 
         {/* Alarm Configuration Drawer */}
