@@ -1,0 +1,6 @@
+{
+  "name": "APEX // PITCH — IST Football & F1 Companion",
+  "description": "Offline-first mobile sports companion for tracking Football club schedules and Formula 1 race weekends in Indian Standard Time (IST, UTC+5:30) with clash detection, live telemetry, and custom alarms.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
