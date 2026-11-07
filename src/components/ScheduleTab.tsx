@@ -50,7 +50,7 @@ import {
   fetchF1SeasonCalendar,
 } from '../services/f1AutoSync';
 import { OfficialLogo } from './OfficialLogo';
-import { WhiteTrackMap } from './CircuitSvg';
+import { TyreCompoundBadge, WhiteTrackMap } from './CircuitSvg';
 import { F1_LOGOS } from '../data/logos';
 
 const DEFAULT_CLASH_SETTINGS: ClashDetectorSettings = {
@@ -181,6 +181,14 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
     useState<FootballMatch | null>(null);
   const [selectedWeekendModal, setSelectedWeekendModal] =
     useState<F1Weekend | null>(null);
+  const [expandedModalSessionId, setExpandedModalSessionId] =
+    useState<string | null>(null);
+
+  const openF1WeekendModal = (wknd: F1Weekend, preferredSessionId?: string) => {
+    setSelectedWeekendModal(wknd);
+    // Only expand a session's results if the user explicitly pressed that session
+    setExpandedModalSessionId(preferredSessionId || null);
+  };
 
   const [activeVisibleIndex, setActiveVisibleIndex] = useState<number>(0);
   const cardRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -1710,10 +1718,17 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 const isWeekendLive = wkndLiveStatus === 'LIVE';
                 const isWeekendCompleted = wkndLiveStatus === 'COMPLETED';
                 const isHeroCard = nextHeroWeekend?.id === wknd.id;
+                const hasAnyDoneSessionWithResults = (wknd.sessions || []).some(
+                  (s) =>
+                    (wknd.status === 'COMPLETED' ||
+                      evaluateF1SessionRuntimeStatus(s) === 'COMPLETED') &&
+                    Boolean(s.fastestOrWinnerSummary)
+                );
                 const showInlineSessions =
                   timeWindow === 'THIS_WEEK' ||
                   timeWindow === 'NEXT_WEEK' ||
-                  isWeekendLive;
+                  isWeekendLive ||
+                  hasAnyDoneSessionWithResults;
 
                 return (
                   <div
@@ -1725,13 +1740,13 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                     ref={(el) => {
                       cardRefs.current[wknd.id] = el;
                     }}
-                    onClick={() => setSelectedWeekendModal(wknd)}
+                    onClick={() => openF1WeekendModal(wknd)}
                     role="button"
                     tabIndex={0}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        setSelectedWeekendModal(wknd);
+                        openF1WeekendModal(wknd);
                       }
                     }}
                     className={`rounded-xl p-4 border transition-colors cursor-pointer space-y-3 ${
@@ -1787,12 +1802,6 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                           {wknd.officialTitle}
                         </p>
 
-                        {wknd.winnerSummary && (
-                          <p className="text-[11px] font-semibold text-emerald-400 mt-1 truncate">
-                            🏆 {wknd.winnerSummary}
-                          </p>
-                        )}
-
                         {/* Crisp Date Badge at bottom-left */}
                         <div className="bg-[#F8FAFC] text-[#0A0A0C] text-xs font-bold px-2.5 py-1 rounded-md mt-2.5 inline-flex items-center gap-1.5 tabular-nums">
                           <span>{computedDatePill}</span>
@@ -1807,7 +1816,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                       />
                     </div>
 
-                    {/* Inline Verified IST Session Breakdown for THIS_WEEK, NEXT_WEEK, and LIVE weekend */}
+                    {/* Inline Verified IST Session Breakdown & Fastest/Winner Results */}
                     {showInlineSessions && wknd.sessions?.length > 0 && (
                       <div className="pt-2.5 border-t border-[#1E2028] grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                         {wknd.sessions.map((sess) => {
@@ -1821,81 +1830,90 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                           return (
                             <div
                               key={sess.id}
-                              className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[11px] ${
+                              data-testid={`schedule-f1-session-${sess.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openF1WeekendModal(wknd, sess.id);
+                              }}
+                              className={`px-2.5 py-1.5 rounded-lg text-[11px] space-y-1 transition-colors ${
                                 isSessLive
                                   ? 'bg-[#E10600]/20 border border-[#E10600]/60'
+                                  : isSessDone && sess.fastestOrWinnerSummary
+                                  ? 'bg-[#181A20] border border-emerald-500/30 hover:border-emerald-400/60'
                                   : 'bg-[#181A20] border border-[#1E2028]'
                               }`}
                             >
-                              <div className="flex items-center gap-1.5 min-w-0">
-                                <span
-                                  className={`font-bold uppercase ${
-                                    isSessLive
-                                      ? 'text-[#F8FAFC]'
-                                      : sess.name === 'Grand Prix'
-                                      ? 'text-[#E10600]'
-                                      : sess.name === 'Qualifying'
-                                      ? 'text-amber-400'
-                                      : 'text-[#F8FAFC]'
-                                  }`}
-                                >
-                                  {sess.name}
-                                </span>
-                                <span className="text-[#8E95A5]">•</span>
-                                <span className="text-[#8E95A5] font-medium tabular-nums">
-                                  {sess.istDateLabel}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {isSessLive && (
-                                  <span className="px-1.5 py-0.2 rounded-md bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase">
-                                    LIVE
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span
+                                    className={`font-bold uppercase ${
+                                      isSessLive
+                                        ? 'text-[#F8FAFC]'
+                                        : sess.name === 'Grand Prix'
+                                        ? 'text-[#E10600]'
+                                        : sess.name === 'Qualifying'
+                                        ? 'text-amber-400'
+                                        : 'text-[#F8FAFC]'
+                                    }`}
+                                  >
+                                    {sess.name}
                                   </span>
-                                )}
-                                {isSessDone && !isSessLive && (
-                                  <span className="text-[9px] font-bold text-emerald-400 uppercase">
-                                    DONE
+                                  <span className="text-[#8E95A5]">•</span>
+                                  <span className="text-[#8E95A5] font-medium tabular-nums">
+                                    {sess.istDateLabel}
                                   </span>
-                                )}
-                                {!isSessDone &&
-                                  !isSessLive &&
-                                  isAlarmArmed(sess.id) && (
-                                    <span
-                                      data-testid={`armed-badge-${sess.id}`}
-                                      className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[9px] font-bold text-amber-300 flex items-center gap-0.5"
-                                    >
-                                      <Bell className="w-2.5 h-2.5 text-amber-400" />
-                                      <span>Active / Armed</span>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {isSessLive && (
+                                    <span className="px-1.5 py-0.2 rounded-md bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase">
+                                      LIVE
                                     </span>
                                   )}
-                                <span className="font-bold text-[#F8FAFC] tabular-nums">
-                                  {sess.istTimeLabel}
-                                </span>
-                                {!isSessDone && !isSessLive && (
-                                  <button
-                                    type="button"
-                                    data-testid={`card-calendar-export-${sess.id}`}
-                                    aria-label={`Export ${sess.name} to Calendar`}
-                                    title="Export Session to Calendar & Arm Alert"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      onExportSingleCalendarEvent({
-                                        id: sess.id,
-                                        parentId: wknd.id,
-                                        sport: 'F1',
-                                        title: `F1 ${wknd.grandPrixName} — ${sess.name}`,
-                                        description: `${wknd.officialTitle} (${sess.shortLabel})`,
-                                        location: `${wknd.circuitName}, ${wknd.city}`,
-                                        startTimeISO: sess.startTimeISO,
-                                        durationMinutes: sess.durationMinutes,
-                                        mode: 'ICS',
-                                      });
-                                    }}
-                                    className="h-5 w-5 rounded bg-[#121316] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors"
-                                  >
-                                    <CalendarPlus className="w-3 h-3" />
-                                  </button>
-                                )}
+                                  {isSessDone && !isSessLive && (
+                                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 uppercase">
+                                      DONE • TAP FOR RESULTS
+                                    </span>
+                                  )}
+                                  {!isSessDone &&
+                                    !isSessLive &&
+                                    isAlarmArmed(sess.id) && (
+                                      <span
+                                        data-testid={`armed-badge-${sess.id}`}
+                                        className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[9px] font-bold text-amber-300 flex items-center gap-0.5"
+                                      >
+                                        <Bell className="w-2.5 h-2.5 text-amber-400" />
+                                        <span>Active / Armed</span>
+                                      </span>
+                                    )}
+                                  <span className="font-bold text-[#F8FAFC] tabular-nums">
+                                    {sess.istTimeLabel}
+                                  </span>
+                                  {!isSessDone && !isSessLive && (
+                                    <button
+                                      type="button"
+                                      data-testid={`card-calendar-export-${sess.id}`}
+                                      aria-label={`Export ${sess.name} to Calendar`}
+                                      title="Export Session to Calendar & Arm Alert"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onExportSingleCalendarEvent({
+                                          id: sess.id,
+                                          parentId: wknd.id,
+                                          sport: 'F1',
+                                          title: `F1 ${wknd.grandPrixName} — ${sess.name}`,
+                                          description: `${wknd.officialTitle} (${sess.shortLabel})`,
+                                          location: `${wknd.circuitName}, ${wknd.city}`,
+                                          startTimeISO: sess.startTimeISO,
+                                          durationMinutes: sess.durationMinutes,
+                                          mode: 'ICS',
+                                        });
+                                      }}
+                                      className="h-5 w-5 rounded bg-[#121316] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors"
+                                    >
+                                      <CalendarPlus className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           );
@@ -2270,12 +2288,6 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                     <MapPin className="w-3 h-3" />
                     <span>{selectedWeekendModal.city}</span>
                   </div>
-                  {selectedWeekendModal.winnerSummary && (
-                    <div className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1 pt-1">
-                      <Trophy className="w-3 h-3" />
-                      <span>{selectedWeekendModal.winnerSummary}</span>
-                    </div>
-                  )}
                 </div>
 
                 <WhiteTrackMap
@@ -2288,14 +2300,63 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 />
               </div>
 
-              {/* Weekend Sessions Schedule (Simple 12-Hour Times) */}
+              {/* Weekend Sessions Schedule & Completed Session Results */}
               {selectedWeekendModal.sessions.length > 0 ? (
-                <div className="space-y-2">
-                  <div className="text-xs font-semibold uppercase tracking-wider text-[#8E95A5]">
-                    Session Schedule
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-[#8E95A5]">
+                      Session Schedule &amp; Results
+                    </div>
+                    <span className="text-[10px] text-[#8E95A5]">
+                      Tap completed session for P1–P10
+                    </span>
                   </div>
 
-                  <div className="divide-y divide-[#1E2028] rounded-xl bg-[#181A20] border border-[#1E2028]">
+                  {/* Quick Completed Session Switcher Strip */}
+                  {selectedWeekendModal.sessions.some(
+                    (s) =>
+                      (selectedWeekendModal.status === 'COMPLETED' ||
+                        evaluateF1SessionRuntimeStatus(s) === 'COMPLETED') &&
+                      s.sessionResults &&
+                      s.sessionResults.length > 0
+                  ) && (
+                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                      {selectedWeekendModal.sessions
+                        .filter(
+                          (s) =>
+                            (selectedWeekendModal.status === 'COMPLETED' ||
+                              evaluateF1SessionRuntimeStatus(s) ===
+                                'COMPLETED') &&
+                            s.sessionResults &&
+                            s.sessionResults.length > 0
+                        )
+                        .map((doneSess) => {
+                          const isSelectedTab =
+                            expandedModalSessionId === doneSess.id;
+                          return (
+                            <button
+                              key={doneSess.id}
+                              type="button"
+                              onClick={() =>
+                                setExpandedModalSessionId((prev) =>
+                                  prev === doneSess.id ? null : doneSess.id
+                                )
+                              }
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap shrink-0 transition-colors flex items-center gap-1 ${
+                                isSelectedTab
+                                  ? 'bg-emerald-500 text-[#0A0A0C]'
+                                  : 'bg-[#181A20] text-[#F8FAFC] border border-[#1E2028] hover:border-emerald-400/50'
+                              }`}
+                            >
+                              <span>{doneSess.name} Results</span>
+                              <Check className="w-3 h-3 stroke-[2.5]" />
+                            </button>
+                          );
+                        })}
+                    </div>
+                  )}
+
+                  <div className="divide-y divide-[#1E2028] rounded-xl bg-[#181A20] border border-[#1E2028] overflow-hidden">
                     {selectedWeekendModal.sessions.map((session) => {
                       const simpleSessionTime = formatSimpleCardTime(
                         session.startTimeISO
@@ -2310,122 +2371,268 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                         !isSessionFinished &&
                         !isSessionLive &&
                         isAlarmArmed(session.id);
+                      const hasSessionResults =
+                        isSessionFinished &&
+                        Array.isArray(session.sessionResults) &&
+                        session.sessionResults.length > 0;
+                      const isSessionExpanded =
+                        hasSessionResults &&
+                        expandedModalSessionId === session.id;
 
                       return (
                         <div
                           key={session.id}
-                          className={`px-3.5 py-2.5 flex items-center justify-between gap-2 ${
+                          className={`${
                             isSessionLive ? 'bg-[#E10600]/15' : ''
                           }`}
                         >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span
-                                className={`text-xs font-bold ${
-                                  session.name === 'Grand Prix'
-                                    ? 'text-[#E10600]'
-                                    : 'text-[#F8FAFC]'
-                                }`}
-                              >
-                                {session.name}
-                              </span>
-                              <span className="text-[11px] text-[#8E95A5]">
-                                {session.istDateLabel}
-                              </span>
-                            </div>
-                            <div className="text-xs font-semibold text-[#F8FAFC] tabular-nums mt-0.5 flex items-center gap-1">
-                              <Clock className="w-3 h-3 text-[#8E95A5]" />
-                              <span>{simpleSessionTime}</span>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {isSessionLive ? (
-                              <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase animate-pulse">
-                                LIVE
-                              </span>
-                            ) : isSessionFinished ? (
-                              <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase">
-                                DONE
-                              </span>
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    const wknd = selectedWeekendModal;
-                                    setSelectedWeekendModal(null);
-                                    onOpenAlarmDrawer({
-                                      id: session.id,
-                                      parentId: wknd.id,
-                                      sport: 'F1',
-                                      title: `${wknd.grandPrixName} • ${session.name}`,
-                                      subtitle: `${wknd.circuitName} • ${session.istDateLabel}`,
-                                      eventStartTimeISO: session.startTimeISO,
-                                      istTimeLabel: simpleSessionTime,
-                                    });
-                                  }}
-                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 ${
-                                    sessionArmed
-                                      ? 'bg-amber-400 text-[#0A0A0C] font-bold'
-                                      : 'bg-[#121316] text-[#F8FAFC] border border-[#1E2028]'
-                                  }`}
-                                >
-                                  <Bell className="w-3 h-3" />
-                                  <span>
-                                    {sessionArmed ? 'Active / Armed' : 'Remind'}
+                          <div
+                            onClick={() => {
+                              if (hasSessionResults) {
+                                setExpandedModalSessionId((prev) =>
+                                  prev === session.id ? null : session.id
+                                );
+                              }
+                            }}
+                            className={`px-3.5 py-2.5 space-y-1.5 ${
+                              hasSessionResults
+                                ? 'cursor-pointer hover:bg-white/[0.03]'
+                                : ''
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className={`text-xs font-bold ${
+                                      session.name === 'Grand Prix'
+                                        ? 'text-[#E10600]'
+                                        : 'text-[#F8FAFC]'
+                                    }`}
+                                  >
+                                    {session.name}
                                   </span>
-                                </button>
+                                  <span className="text-[11px] text-[#8E95A5]">
+                                    {session.istDateLabel}
+                                  </span>
+                                </div>
+                                <div className="text-xs font-semibold text-[#F8FAFC] tabular-nums mt-0.5 flex items-center gap-1">
+                                  <Clock className="w-3 h-3 text-[#8E95A5]" />
+                                  <span>{simpleSessionTime}</span>
+                                </div>
+                              </div>
 
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    onExportSingleCalendarEvent({
-                                      id: session.id,
-                                      parentId: selectedWeekendModal.id,
-                                      sport: 'F1',
-                                      title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
-                                      description:
-                                        selectedWeekendModal.officialTitle,
-                                      location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
-                                      startTimeISO: session.startTimeISO,
-                                      durationMinutes: session.durationMinutes,
-                                      mode: 'GOOGLE_CALENDAR',
-                                    })
-                                  }
-                                  aria-label={`Add ${session.name} to Google Calendar`}
-                                  title="Add to Google Calendar & Arm Alert"
-                                  className="px-2 py-1 rounded-lg bg-[#121316] text-emerald-400 border border-[#1E2028] hover:text-[#F8FAFC] text-[10px] font-semibold flex items-center gap-1"
-                                >
-                                  <CalendarPlus className="w-3 h-3" />
-                                  <span>GCal</span>
-                                </button>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {isSessionLive ? (
+                                  <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase animate-pulse">
+                                    LIVE
+                                  </span>
+                                ) : isSessionFinished ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase">
+                                      DONE
+                                    </span>
+                                    {hasSessionResults && (
+                                      <button
+                                        type="button"
+                                        data-testid={`toggle-session-results-${session.id}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setExpandedModalSessionId((prev) =>
+                                            prev === session.id
+                                              ? null
+                                              : session.id
+                                          );
+                                        }}
+                                        className="px-2 py-0.5 rounded-md bg-[#121316] border border-[#1E2028] text-[10px] font-semibold text-[#F8FAFC] flex items-center gap-1"
+                                      >
+                                        <span>
+                                          {isSessionExpanded
+                                            ? 'Hide'
+                                            : 'Results'}
+                                        </span>
+                                        {isSessionExpanded ? (
+                                          <ChevronUp className="w-3 h-3" />
+                                        ) : (
+                                          <ChevronDown className="w-3 h-3" />
+                                        )}
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const wknd = selectedWeekendModal;
+                                        setSelectedWeekendModal(null);
+                                        onOpenAlarmDrawer({
+                                          id: session.id,
+                                          parentId: wknd.id,
+                                          sport: 'F1',
+                                          title: `${wknd.grandPrixName} • ${session.name}`,
+                                          subtitle: `${wknd.circuitName} • ${session.istDateLabel}`,
+                                          eventStartTimeISO:
+                                            session.startTimeISO,
+                                          istTimeLabel: simpleSessionTime,
+                                        });
+                                      }}
+                                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 ${
+                                        sessionArmed
+                                          ? 'bg-amber-400 text-[#0A0A0C] font-bold'
+                                          : 'bg-[#121316] text-[#F8FAFC] border border-[#1E2028]'
+                                      }`}
+                                    >
+                                      <Bell className="w-3 h-3" />
+                                      <span>
+                                        {sessionArmed
+                                          ? 'Active / Armed'
+                                          : 'Remind'}
+                                      </span>
+                                    </button>
 
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    onExportSingleCalendarEvent({
-                                      id: session.id,
-                                      parentId: selectedWeekendModal.id,
-                                      sport: 'F1',
-                                      title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
-                                      description:
-                                        selectedWeekendModal.officialTitle,
-                                      location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
-                                      startTimeISO: session.startTimeISO,
-                                      durationMinutes: session.durationMinutes,
-                                      mode: 'ICS',
-                                    })
-                                  }
-                                  aria-label={`Export ${session.name} to Calendar`}
-                                  title="Download Single .ICS & Arm Alert"
-                                  className="p-1.5 rounded-lg bg-[#121316] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]"
-                                >
-                                  <CalendarPlus className="w-3.5 h-3.5" />
-                                </button>
-                              </>
-                            )}
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        onExportSingleCalendarEvent({
+                                          id: session.id,
+                                          parentId: selectedWeekendModal.id,
+                                          sport: 'F1',
+                                          title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
+                                          description:
+                                            selectedWeekendModal.officialTitle,
+                                          location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
+                                          startTimeISO: session.startTimeISO,
+                                          durationMinutes:
+                                            session.durationMinutes,
+                                          mode: 'GOOGLE_CALENDAR',
+                                        })
+                                      }
+                                      aria-label={`Add ${session.name} to Google Calendar`}
+                                      title="Add to Google Calendar & Arm Alert"
+                                      className="px-2 py-1 rounded-lg bg-[#121316] text-emerald-400 border border-[#1E2028] hover:text-[#F8FAFC] text-[10px] font-semibold flex items-center gap-1"
+                                    >
+                                      <CalendarPlus className="w-3 h-3" />
+                                      <span>GCal</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        onExportSingleCalendarEvent({
+                                          id: session.id,
+                                          parentId: selectedWeekendModal.id,
+                                          sport: 'F1',
+                                          title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
+                                          description:
+                                            selectedWeekendModal.officialTitle,
+                                          location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
+                                          startTimeISO: session.startTimeISO,
+                                          durationMinutes:
+                                            session.durationMinutes,
+                                          mode: 'ICS',
+                                        })
+                                      }
+                                      aria-label={`Export ${session.name} to Calendar`}
+                                      title="Download Single .ICS & Arm Alert"
+                                      className="p-1.5 rounded-lg bg-[#121316] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]"
+                                    >
+                                      <CalendarPlus className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
+                            {isSessionExpanded &&
+                              session.fastestOrWinnerSummary && (
+                                <div className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-[11px] font-semibold text-emerald-300 flex items-center justify-between gap-2">
+                                  <span className="truncate">
+                                    ⚡ {session.fastestOrWinnerSummary}
+                                  </span>
+                                </div>
+                              )}
                           </div>
+
+                          {/* Expandable Top 10 Session Classification Leaderboard */}
+                          {isSessionExpanded && session.sessionResults && (
+                            <div
+                              data-testid={`modal-session-classification-${session.id}`}
+                              className="bg-[#0A0A0C] border-t border-[#1E2028] px-3 py-2.5 space-y-1.5"
+                            >
+                              <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#8E95A5] px-1">
+                                <span>POS / DRIVER ({session.name})</span>
+                                <div className="flex items-center gap-3">
+                                  <span>TIME / GAP</span>
+                                  <span>TYRE / LAPS</span>
+                                </div>
+                              </div>
+                              <div className="divide-y divide-[#1E2028]/80 rounded-lg border border-[#1E2028] bg-[#121316] overflow-hidden">
+                                {session.sessionResults.map((entry) => (
+                                  <div
+                                    key={`${session.id}-${entry.driverCode}`}
+                                    className="px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <span
+                                        className={`w-4 tabular-nums font-bold text-[11px] shrink-0 ${
+                                          entry.pos === 1
+                                            ? 'text-emerald-400'
+                                            : 'text-[#8E95A5]'
+                                        }`}
+                                      >
+                                        {entry.pos}
+                                      </span>
+                                      <span
+                                        className="w-1 h-5 rounded-full shrink-0"
+                                        style={{
+                                          backgroundColor:
+                                            entry.constructorColor,
+                                        }}
+                                      />
+                                      <div className="min-w-0">
+                                        <div className="font-bold text-[#F8FAFC] truncate flex items-center gap-1">
+                                          <span>{entry.driverName}</span>
+                                          <span className="text-[10px] text-[#8E95A5] font-normal">
+                                            #{entry.driverNumber}
+                                          </span>
+                                        </div>
+                                        <div className="text-[10px] text-[#8E95A5] truncate">
+                                          {entry.constructorName}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center gap-2.5 shrink-0 tabular-nums">
+                                      <div className="text-right">
+                                        <div
+                                          className={`text-[11px] font-bold ${
+                                            entry.pos === 1
+                                              ? 'text-emerald-400'
+                                              : 'text-[#F8FAFC]'
+                                          }`}
+                                        >
+                                          {entry.timeOrGap}
+                                        </div>
+                                        {entry.bestLapTime &&
+                                          entry.pos > 1 && (
+                                            <div className="text-[9px] text-[#8E95A5]">
+                                              {entry.bestLapTime}
+                                            </div>
+                                          )}
+                                      </div>
+                                      <div className="flex items-center gap-1">
+                                        <TyreCompoundBadge
+                                          compound={entry.tyreCompound}
+                                          ageLaps={entry.lapsCompleted}
+                                        />
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}

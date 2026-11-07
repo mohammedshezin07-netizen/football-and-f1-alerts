@@ -1151,7 +1151,41 @@ test('Data Integrity & Anti-Stale Safeguards Engine enforces 5m/12h/7d Cache TTL
   assert.equal(PREMIER_LEAGUE_2025_26_FINAL_TABLE.rows.length, 0);
 });
 
+test('F1 Schedule & Live Center sessions include fastest driver summaries and Top-10 sessionResults for completed FP1, FP2, FP3, Qualifying, and Grand Prix sessions', () => {
+  const brazilWknd = UPCOMING_F1_WEEKENDS.find((w) => w.id === 'f1-wknd-brazil');
+  assert.ok(brazilWknd, 'Expected Brazilian Grand Prix weekend in UPCOMING_F1_WEEKENDS');
 
+  const fp1 = brazilWknd.sessions.find((s) => s.id === 'f1-br-fp1');
+  const fp2 = brazilWknd.sessions.find((s) => s.id === 'f1-br-fp2');
+  const fp3 = brazilWknd.sessions.find((s) => s.id === 'f1-br-fp3');
+  assert.ok(fp1 && fp2 && fp3, 'Expected FP1, FP2, and FP3 sessions on Brazilian GP');
 
+  assert.ok(fp1.fastestOrWinnerSummary?.includes('L. Norris') && fp1.fastestOrWinnerSummary?.includes('1:10.610 (S)'));
+  assert.ok(fp2.fastestOrWinnerSummary?.includes('K. Antonelli') && fp2.fastestOrWinnerSummary?.includes('1:10.184 (S)'));
+  assert.ok(fp3.fastestOrWinnerSummary?.includes('M. Verstappen') && fp3.fastestOrWinnerSummary?.includes('1:09.892 (S)'));
 
+  assert.equal(fp1.sessionResults?.length, 10, 'Expected Top-10 sessionResults for FP1');
+  assert.equal(fp2.sessionResults?.length, 10, 'Expected Top-10 sessionResults for FP2');
+  assert.equal(fp3.sessionResults?.length, 10, 'Expected Top-10 sessionResults for FP3');
+  assert.equal(fp1.sessionResults?.[0].driverCode, 'NOR');
+  assert.equal(fp2.sessionResults?.[0].driverCode, 'ANT');
+  assert.equal(fp3.sessionResults?.[0].driverCode, 'VER');
+
+  // Verify completed rounds in F1_2026_FULL_SEASON also carry FP1, FP2, FP3, Qualifying, and Grand Prix results
+  const completed2026Rounds = F1_2026_FULL_SEASON.filter((w) => w.status === 'COMPLETED');
+  assert.equal(completed2026Rounds.length, 20, 'Expected 20 completed 2026 rounds');
+  for (const roundWknd of completed2026Rounds) {
+    for (const sess of roundWknd.sessions) {
+      assert.ok(
+        sess.fastestOrWinnerSummary && sess.fastestOrWinnerSummary.length > 0,
+        `Expected fastestOrWinnerSummary on ${roundWknd.grandPrixName} ${sess.name}`
+      );
+      assert.equal(
+        sess.sessionResults?.length,
+        10,
+        `Expected 10-driver session classification on ${roundWknd.grandPrixName} ${sess.name}`
+      );
+    }
+  }
+});
 

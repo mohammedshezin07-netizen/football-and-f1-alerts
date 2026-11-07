@@ -235,6 +235,21 @@ export interface FootballMatch {
   };
 }
 
+export interface F1SessionResultEntry {
+  pos: number;
+  driverCode: string;
+  driverName: string;
+  driverNumber: number;
+  constructorName: string;
+  constructorCode: string;
+  constructorColor: string;
+  timeOrGap: string;
+  bestLapTime?: string;
+  tyreCompound: TyreCompound;
+  lapsCompleted: number;
+  hasFastestLap?: boolean;
+}
+
 export interface F1Session {
   id: string;
   name: 'FP1' | 'Sprint Qualifying' | 'FP2' | 'Sprint' | 'FP3' | 'Qualifying' | 'Grand Prix';
@@ -245,6 +260,8 @@ export interface F1Session {
   trackLocalTimeLabel: string;
   durationMinutes: number;
   status?: 'UPCOMING' | 'LIVE' | 'COMPLETED';
+  fastestOrWinnerSummary?: string;
+  sessionResults?: F1SessionResultEntry[];
 }
 
 export type CircuitSvgId =

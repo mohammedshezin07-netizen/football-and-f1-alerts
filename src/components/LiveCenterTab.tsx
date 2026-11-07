@@ -35,7 +35,10 @@ import {
   evaluateF1SessionRuntimeStatus,
   evaluateF1WeekendLiveStatus,
 } from '../utils/scheduleLogic';
-import { getBaselineDriverCareerProfile } from '../services/f1AutoSync';
+import {
+  F1_2026_FULL_SEASON,
+  getBaselineDriverCareerProfile,
+} from '../services/f1AutoSync';
 import { DriverCareerProfileModal } from './AlarmModalAndDrawers';
 
 type LiveSportViewMode = 'ALL' | 'FOOTBALL' | 'F1';
@@ -72,6 +75,15 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
   const [selectedF1Id, setSelectedF1Id] = useState<string>(
     LIVE_F1_FEEDS[0]?.id || liveF1.id
   );
+  const [selectedF1SessionId, setSelectedF1SessionId] = useState<string | null>(
+    null
+  );
+  const [expandedBannerWeekendId, setExpandedBannerWeekendId] = useState<
+    string | null
+  >(null);
+  const [bannerSelectedSessionId, setBannerSelectedSessionId] = useState<
+    string | null
+  >(null);
 
   const [revealFootballScore, setRevealFootballScore] = useState<boolean>(false);
   const [revealF1Order, setRevealF1Order] = useState<boolean>(false);
@@ -87,6 +99,22 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
     selectedF1Id === liveF1.id
       ? liveF1
       : LIVE_F1_FEEDS.find((f) => f.id === selectedF1Id) || liveF1;
+
+  // Match the selected F1 race in Live Center to its full F1Weekend (with FP1, FP2, FP3, Quali, GP session results)
+  const matchedF1Weekend = useMemo(() => {
+    const allWeekends = [...upcomingF1Weekends, ...F1_2026_FULL_SEASON];
+    if (selectedF1Id.startsWith('f1-wknd-') || selectedF1Id.startsWith('f1-2026-')) {
+      return allWeekends.find((w) => w.id === selectedF1Id) || null;
+    }
+    const targetName = activeF1.grandPrixName.toLowerCase();
+    return (
+      allWeekends.find(
+        (w) =>
+          w.grandPrixName.toLowerCase() === targetName ||
+          w.grandPrixName.toLowerCase().includes(targetName.replace(' grand prix', ''))
+      ) || null
+    );
+  }, [selectedF1Id, activeF1.grandPrixName, upcomingF1Weekends]);
 
   // STRICT REAL-TIME CREDIBILITY GATEKEEPER:
   // Check whether any match, F1 session, or F1 Grand Prix weekend (from FP1 start until Grand Prix finish) is live right now.
@@ -249,50 +277,241 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
             const nextUpcomingSess = wknd.sessions.find(
               (s) => evaluateF1SessionRuntimeStatus(s, nowMs) === 'UPCOMING'
             );
+            const completedSessions = wknd.sessions.filter(
+              (s) => evaluateF1SessionRuntimeStatus(s, nowMs) === 'COMPLETED'
+            );
             const activeSess =
               liveSess ||
               nextUpcomingSess ||
               wknd.sessions[wknd.sessions.length - 1];
+            const isBannerExpanded = expandedBannerWeekendId === wknd.id;
+            const selectedDoneSess =
+              completedSessions.find((s) => s.id === bannerSelectedSessionId) ||
+              null;
+
             return (
               <div
                 key={wknd.id}
                 data-testid="live-f1-weekend-banner"
-                className="rounded-xl p-4 border border-[#E10600]/80 bg-gradient-to-br from-[#181A20] via-[#121316] to-[#2D0B0E] flex items-center justify-between gap-3 shadow-lg"
+                className="rounded-xl p-4 border border-[#E10600]/80 bg-gradient-to-br from-[#181A20] via-[#121316] to-[#2D0B0E] space-y-3 shadow-lg"
               >
-                <div className="space-y-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase tracking-wider animate-pulse">
-                      LIVE • RACE WEEKEND
-                    </span>
-                    <span className="text-[11px] font-semibold text-[#8E95A5] uppercase">
-                      ROUND {wknd.round}
-                    </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExpandedBannerWeekendId((prev) => {
+                      const next = prev === wknd.id ? null : wknd.id;
+                      if (!next) {
+                        setBannerSelectedSessionId(null);
+                      }
+                      return next;
+                    })
+                  }
+                  className="w-full flex items-center justify-between gap-3 text-left"
+                >
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase tracking-wider animate-pulse">
+                        LIVE • RACE WEEKEND
+                      </span>
+                      <span className="text-[11px] font-semibold text-[#8E95A5] uppercase">
+                        ROUND {wknd.round}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold">
+                        {isBannerExpanded
+                          ? 'HIDE SESSIONS ▲'
+                          : `${completedSessions.length}/${wknd.sessions.length} SESSIONS DONE • TAP RACE FOR RESULTS ▼`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <OfficialLogo
+                        src={wknd.countryFlagUrl}
+                        alt={wknd.hostName || wknd.countryName || wknd.city}
+                        shape="Flag"
+                        size="xs"
+                      />
+                      <h2 className="font-display text-base font-extrabold text-[#F8FAFC] truncate">
+                        {wknd.grandPrixName}
+                      </h2>
+                    </div>
+                    {activeSess && (
+                      <p className="text-xs text-[#F8FAFC] font-medium">
+                        {liveSess
+                          ? `Active Session: ${liveSess.name} (${liveSess.istTimeLabel})`
+                          : `Weekend Live Through Grand Prix • Next: ${activeSess.name} (${activeSess.istDateLabel} • ${activeSess.istTimeLabel})`}
+                      </p>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <OfficialLogo
-                      src={wknd.countryFlagUrl}
-                      alt={wknd.hostName || wknd.countryName || wknd.city}
-                      shape="Flag"
-                      size="xs"
-                    />
-                    <h2 className="font-display text-base font-extrabold text-[#F8FAFC] truncate">
-                      {wknd.grandPrixName}
-                    </h2>
-                  </div>
-                  {activeSess && (
-                    <p className="text-xs text-[#F8FAFC] font-medium">
-                      {liveSess
-                        ? `Active Session: ${liveSess.name} (${liveSess.istTimeLabel})`
-                        : `Weekend Live Through Grand Prix • Next: ${activeSess.name} (${activeSess.istDateLabel} • ${activeSess.istTimeLabel})`}
-                    </p>
-                  )}
-                </div>
 
-                <WhiteTrackMap
-                  circuitId={wknd.circuitSvgId}
-                  hostName={wknd.hostName || wknd.countryName || wknd.city}
-                  className="w-20 h-14 shrink-0"
-                />
+                  <WhiteTrackMap
+                    circuitId={wknd.circuitSvgId}
+                    hostName={wknd.hostName || wknd.countryName || wknd.city}
+                    className="w-20 h-14 shrink-0"
+                  />
+                </button>
+
+                {/* Weekend Session Strip: ONLY shown after pressing the race banner, and fastest driver ONLY shown after pressing a DONE session */}
+                {isBannerExpanded && (
+                  <div className="pt-2 border-t border-[#1E2028]/80 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#8E95A5]">
+                        Weekend Sessions • Press Any Done Session To Reveal Results
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {wknd.sessions.map((sess) => {
+                        const runtimeStatus = evaluateF1SessionRuntimeStatus(
+                          sess,
+                          nowMs
+                        );
+                        const isDone = runtimeStatus === 'COMPLETED';
+                        const isLive = runtimeStatus === 'LIVE';
+                        const isSelectedSess =
+                          selectedDoneSess?.id === sess.id;
+
+                        return (
+                          <button
+                            key={sess.id}
+                            type="button"
+                            disabled={!isDone}
+                            data-testid={`live-banner-session-${sess.id}`}
+                            onClick={() => {
+                              if (isDone) {
+                                setBannerSelectedSessionId((prev) =>
+                                  prev === sess.id ? null : sess.id
+                                );
+                              }
+                            }}
+                            className={`px-2.5 py-2 rounded-lg border text-left transition-colors flex flex-col gap-0.5 ${
+                              isSelectedSess
+                                ? 'bg-emerald-500/15 border-emerald-400 text-[#F8FAFC]'
+                                : isDone
+                                ? 'bg-[#121316]/90 border-emerald-500/35 hover:border-emerald-400 text-[#F8FAFC] cursor-pointer'
+                                : isLive
+                                ? 'bg-[#E10600]/20 border-[#E10600] text-[#F8FAFC]'
+                                : 'bg-[#0A0A0C]/60 border-[#1E2028] text-[#8E95A5] opacity-80 cursor-default'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-bold">{sess.name}</span>
+                              {isDone ? (
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-extrabold uppercase">
+                                  {isSelectedSess ? 'HIDE RESULTS ▲' : 'DONE • VIEW RESULTS ▼'}
+                                </span>
+                              ) : isLive ? (
+                                <span className="px-1.5 py-0.5 rounded bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase animate-pulse">
+                                  LIVE
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-[#8E95A5] tabular-nums">
+                                  {sess.istDateLabel} • {sess.istTimeLabel}
+                                </span>
+                              )}
+                            </div>
+                            {isSelectedSess && sess.fastestOrWinnerSummary && (
+                              <div className="text-[11px] font-semibold text-emerald-300 tabular-nums truncate">
+                                ⚡ {sess.fastestOrWinnerSummary}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                  {/* Expanded Session Classification Table for the selected DONE session */}
+                  {isBannerExpanded &&
+                    selectedDoneSess &&
+                    selectedDoneSess.sessionResults &&
+                    selectedDoneSess.sessionResults.length > 0 && (
+                      <div
+                        data-testid={`live-banner-results-${selectedDoneSess.id}`}
+                        className="mt-2 rounded-xl border border-[#1E2028] bg-[#0A0A0C]/95 overflow-hidden"
+                      >
+                        <div className="px-3 py-2 bg-[#181A20] border-b border-[#1E2028] flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-extrabold uppercase">
+                              {selectedDoneSess.name} • FINAL RESULTS
+                            </span>
+                            <span className="text-xs font-bold text-[#F8FAFC] truncate">
+                              {selectedDoneSess.fastestOrWinnerSummary}
+                            </span>
+                          </div>
+                          <span className="text-[10px] text-[#8E95A5] shrink-0">
+                            Top 10 Classification
+                          </span>
+                        </div>
+                        <div className="divide-y divide-[#1E2028]/70">
+                          {selectedDoneSess.sessionResults.map((entry) => (
+                            <button
+                              key={`${selectedDoneSess.id}-${entry.pos}`}
+                              type="button"
+                              onClick={() =>
+                                handleSelectDriver(
+                                  `drv-${entry.driverCode.toLowerCase()}`,
+                                  entry.driverCode
+                                )
+                              }
+                              className="w-full px-3 py-1.5 flex items-center justify-between text-xs hover:bg-[#181A20]/60 transition-colors text-left"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className={`w-5 text-center font-extrabold tabular-nums ${
+                                    entry.pos === 1
+                                      ? 'text-amber-400'
+                                      : entry.pos <= 3
+                                      ? 'text-[#F8FAFC]'
+                                      : 'text-[#8E95A5]'
+                                  }`}
+                                >
+                                  {entry.pos}
+                                </span>
+                                <span
+                                  className="w-1 h-3.5 rounded-full shrink-0"
+                                  style={{ backgroundColor: entry.constructorColor }}
+                                />
+                                <span className="font-bold text-[#F8FAFC] truncate">
+                                  {entry.driverName}
+                                </span>
+                                <span className="text-[10px] text-[#8E95A5] hidden sm:inline truncate">
+                                  {entry.constructorName}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2.5 shrink-0 tabular-nums">
+                                <span
+                                  className={`font-semibold ${
+                                    entry.pos === 1
+                                      ? 'text-emerald-300 font-bold'
+                                      : 'text-[#F8FAFC]'
+                                  }`}
+                                >
+                                  {entry.timeOrGap}
+                                </span>
+                                {entry.tyreCompound && (
+                                  <span
+                                    className={`w-4 h-4 rounded-full text-[9px] font-extrabold flex items-center justify-center border ${
+                                      entry.tyreCompound === 'S'
+                                        ? 'border-[#E10600] text-[#E10600] bg-[#E10600]/10'
+                                        : entry.tyreCompound === 'M'
+                                        ? 'border-amber-400 text-amber-300 bg-amber-400/10'
+                                        : 'border-slate-300 text-slate-200 bg-slate-300/10'
+                                    }`}
+                                  >
+                                    {entry.tyreCompound}
+                                  </span>
+                                )}
+                                {typeof entry.lapsCompleted === 'number' && (
+                                  <span className="text-[10px] text-[#8E95A5] w-10 text-right">
+                                    {entry.lapsCompleted}L
+                                  </span>
+                                )}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -743,7 +962,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
         </section>
       )}
 
-      {/* SECTION 2: FORMULA 1 OFFICIAL RACE CLASSIFICATION & TIMING TOWER (FINAL) */}
+      {/* SECTION 2: FORMULA 1 OFFICIAL RACE & SESSION CLASSIFICATION (TIMING TOWER) */}
       {showF1Section && (
         <section
           className="px-4 space-y-2.5"
@@ -751,22 +970,25 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
         >
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-[#8E95A5]">
-              Official F1 Race Classification (FINAL)
+              Official F1 Race &amp; Session Results
             </h2>
             <span className="text-[11px] text-[#8E95A5]">
-              Tap driver for Career Profile
+              Touch any race &amp; session for results
             </span>
           </div>
 
-          {/* F1 Grand Prix Feed Selector */}
+          {/* F1 Grand Prix Feed Selector (Includes Live/Current Weekend + Completed Grand Prix Feeds) */}
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
             {LIVE_F1_FEEDS.map((feed) => {
-              const isSelected = feed.id === activeF1.id;
+              const isSelected = selectedF1Id === feed.id;
               return (
                 <button
                   key={feed.id}
                   type="button"
-                  onClick={() => setSelectedF1Id(feed.id)}
+                  onClick={() => {
+                    setSelectedF1Id(feed.id);
+                    setSelectedF1SessionId(null);
+                  }}
                   className={`min-h-[32px] px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-colors ${
                     isSelected
                       ? 'bg-[#E10600] text-[#F8FAFC] font-bold'
@@ -783,169 +1005,416 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                 </button>
               );
             })}
+            {/* Also allow touching the active Brazilian GP weekend or recent completed 2026 rounds to inspect all session results */}
+            {[
+              ...upcomingF1Weekends.filter((w) =>
+                w.sessions.some(
+                  (s) =>
+                    evaluateF1SessionRuntimeStatus(s) === 'COMPLETED' ||
+                    s.status === 'COMPLETED'
+                )
+              ),
+              ...F1_2026_FULL_SEASON.filter(
+                (w) =>
+                  w.status === 'COMPLETED' &&
+                  !LIVE_F1_FEEDS.some((f) =>
+                    w.grandPrixName
+                      .toLowerCase()
+                      .includes(f.grandPrixName.toLowerCase().replace(' grand prix', ''))
+                  )
+              ).slice(-4).reverse(),
+            ].map((wknd) => {
+              const isSelected = selectedF1Id === wknd.id;
+              return (
+                <button
+                  key={wknd.id}
+                  type="button"
+                  data-testid={`live-f1-race-selector-${wknd.id}`}
+                  onClick={() => {
+                    setSelectedF1Id(wknd.id);
+                    const doneSessions = wknd.sessions.filter(
+                      (s) =>
+                        wknd.status === 'COMPLETED' ||
+                        evaluateF1SessionRuntimeStatus(s) === 'COMPLETED'
+                    );
+                    setSelectedF1SessionId(
+                      doneSessions[doneSessions.length - 1]?.id || null
+                    );
+                  }}
+                  className={`min-h-[32px] px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-colors ${
+                    isSelected
+                      ? 'bg-[#E10600] text-[#F8FAFC] font-bold'
+                      : 'bg-[#121316] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]'
+                  }`}
+                >
+                  <OfficialLogo
+                    src={wknd.countryFlagUrl}
+                    alt={wknd.grandPrixName}
+                    shape="Flag"
+                    size="xs"
+                  />
+                  <span>{wknd.grandPrixName}</span>
+                </button>
+              );
+            })}
           </div>
 
           <div className="rounded-xl border border-[#1E2028] bg-[#121316] overflow-hidden">
             {/* F1 Session Header */}
-            <div className="p-4 border-b border-[#1E2028] bg-[#181A20]/70 space-y-2.5">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <OfficialLogo
-                    src={F1_LOGOS.F1_MAIN}
-                    alt="Formula 1"
-                    size="xs"
-                  />
-                  <OfficialLogo
-                    src={activeF1.countryFlagUrl}
-                    alt={activeF1.grandPrixName}
-                    shape="Flag"
-                    size="sm"
-                  />
-                  <div className="min-w-0">
-                    <h3 className="font-display text-base font-bold text-[#F8FAFC] truncate">
-                      {activeF1.grandPrixName}
-                    </h3>
-                    <p className="text-xs text-[#8E95A5] truncate">
-                      {activeF1.sessionName}
-                    </p>
-                  </div>
-                </div>
+            {(() => {
+              const displayFlag =
+                matchedF1Weekend?.countryFlagUrl || activeF1.countryFlagUrl;
+              const displayGpName =
+                matchedF1Weekend?.grandPrixName || activeF1.grandPrixName;
+              const displayCircuitSvg =
+                matchedF1Weekend?.circuitSvgId || activeF1.circuitSvgId;
+              const activeCustomSession =
+                matchedF1Weekend?.sessions.find(
+                  (s) => s.id === selectedF1SessionId
+                ) || null;
 
-                <WhiteTrackMap
-                  circuitId={activeF1.circuitSvgId}
-                  hostName={activeF1.grandPrixName.replace(' Grand Prix', '')}
-                  className="w-20 h-12 shrink-0"
-                />
-              </div>
-
-              <div className="flex items-center justify-between text-xs tabular-nums pt-1">
-                <span className="px-2.5 py-0.5 rounded-md bg-[#121316] border border-[#1E2028] font-bold text-[#F8FAFC]">
-                  FINAL • LAP {activeF1.currentLap}/{activeF1.totalLaps}
-                </span>
-                <span className="text-[#8E95A5]">
-                  Track {activeF1.trackTempC}°C • Air {activeF1.airTempC}°C
-                </span>
-              </div>
-            </div>
-
-            {/* Timing Tower Column Headers */}
-            <div className="px-4 py-2 bg-[#0A0A0C] border-b border-[#1E2028] flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#8E95A5]">
-              <span>POS / DRIVER</span>
-              <div className="flex items-center gap-4">
-                <span>GAP / TIME</span>
-                <span>FINAL STINT TYRE</span>
-              </div>
-            </div>
-
-            {/* Timing Tower Driver Rows */}
-            {isF1Masked ? (
-              <div className="p-6 text-center">
-                <button
-                  type="button"
-                  onClick={() => setRevealF1Order(true)}
-                  className="px-4 py-2 rounded-xl border border-amber-400/50 bg-amber-500/10 text-amber-300 text-xs font-bold inline-flex items-center gap-2"
-                >
-                  <Eye className="w-4 h-4 stroke-[1.5]" />
-                  <span>Avoid Spoilers Active • Tap to Reveal Classification</span>
-                </button>
-              </div>
-            ) : (
-              <div className="divide-y divide-[#1E2028]">
-                {activeF1.drivers.map((drv) => {
-                  const careerProfile =
-                    driverCareerCache[drv.driverId] ||
-                    driverCareerCache[drv.driverCode] ||
-                    activeF1.driverCareerRegistry[drv.driverId] ||
-                    getBaselineDriverCareerProfile(drv.driverCode);
-
-                  return (
-                    <button
-                      key={drv.driverId}
-                      type="button"
-                      onClick={() =>
-                        handleSelectDriver(drv.driverId, drv.driverCode)
-                      }
-                      aria-label={`View career statistics for ${drv.driverName}`}
-                      className="w-full px-4 py-2.5 flex items-center justify-between gap-2 hover:bg-[#181A20] transition-colors text-left"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0 flex-1 overflow-hidden">
-                        <span className="w-5 tabular-nums text-xs font-bold text-[#8E95A5] shrink-0">
-                          {drv.position}
-                        </span>
-
-                        <span
-                          className="w-1 h-8 rounded-full shrink-0"
-                          style={{ backgroundColor: drv.constructorColor }}
+              return (
+                <>
+                  <div className="p-4 border-b border-[#1E2028] bg-[#181A20]/70 space-y-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <OfficialLogo
+                          src={F1_LOGOS.F1_MAIN}
+                          alt="Formula 1"
+                          size="xs"
                         />
-
-                        <F1DriverAvatar
-                          src={careerProfile?.headshotUrl}
-                          name={drv.driverName}
-                          code={drv.driverCode}
-                          teamColor={drv.constructorColor}
+                        <OfficialLogo
+                          src={displayFlag}
+                          alt={displayGpName}
+                          shape="Flag"
                           size="sm"
                         />
+                        <div className="min-w-0">
+                          <h3 className="font-display text-base font-bold text-[#F8FAFC] truncate">
+                            {displayGpName}
+                          </h3>
+                          <p className="text-xs text-[#8E95A5] truncate">
+                            {activeCustomSession
+                              ? `${activeCustomSession.name} • ${
+                                  activeCustomSession.fastestOrWinnerSummary ||
+                                  activeCustomSession.istDateLabel
+                                }`
+                              : activeF1.sessionName}
+                          </p>
+                        </div>
+                      </div>
 
-                        <div className="min-w-0 flex-1 overflow-hidden">
-                          <div className="flex items-center gap-1.5 overflow-hidden">
-                            <span className="text-xs font-bold text-[#F8FAFC] truncate">
-                              {drv.driverName}
-                            </span>
-                            {drv.hasFastestLap && (
-                              <span
-                                title="Fastest Lap"
-                                className="px-1.5 py-0.2 rounded-md bg-purple-500/25 border border-purple-400/40 text-purple-300 text-[9px] font-bold shrink-0"
+                      <WhiteTrackMap
+                        circuitId={displayCircuitSvg}
+                        hostName={displayGpName.replace(' Grand Prix', '')}
+                        className="w-20 h-12 shrink-0"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs tabular-nums pt-1">
+                      <span className="px-2.5 py-0.5 rounded-md bg-[#121316] border border-[#1E2028] font-bold text-[#F8FAFC]">
+                        {activeCustomSession
+                          ? `${activeCustomSession.name} • DONE`
+                          : `FINAL • LAP ${activeF1.currentLap}/${activeF1.totalLaps}`}
+                      </span>
+                      <span className="text-[#8E95A5]">
+                        Track {activeF1.trackTempC}°C • Air {activeF1.airTempC}°C
+                      </span>
+                    </div>
+
+                    {/* Interactive Weekend Session Strip (FP1, FP2, FP3, Qualifying, Grand Prix) */}
+                    {matchedF1Weekend && (
+                      <div
+                        data-testid="live-center-f1-session-tabs"
+                        className="pt-2 border-t border-[#1E2028] space-y-1.5"
+                      >
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-[#8E95A5]">
+                          Weekend Sessions (DONE vs UPCOMING) — Touch Session For Results:
+                        </div>
+                        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                          {matchedF1Weekend.sessions.map((sess) => {
+                            const isDone =
+                              matchedF1Weekend.status === 'COMPLETED' ||
+                              evaluateF1SessionRuntimeStatus(sess) ===
+                                'COMPLETED';
+                            const isRaceFeedDefault =
+                              !selectedF1SessionId &&
+                              sess.name === 'Grand Prix' &&
+                              LIVE_F1_FEEDS.some((f) => f.id === selectedF1Id);
+                            const isSelectedSess =
+                              selectedF1SessionId === sess.id ||
+                              isRaceFeedDefault;
+
+                            return (
+                              <button
+                                key={sess.id}
+                                type="button"
+                                disabled={!isDone}
+                                data-testid={`f1-live-session-tab-${sess.id}`}
+                                onClick={() => {
+                                  if (!isDone) return;
+                                  if (
+                                    sess.name === 'Grand Prix' &&
+                                    LIVE_F1_FEEDS.some(
+                                      (f) => f.id === selectedF1Id
+                                    )
+                                  ) {
+                                    setSelectedF1SessionId(null);
+                                  } else {
+                                    setSelectedF1SessionId(sess.id);
+                                  }
+                                }}
+                                className={`px-2.5 py-1.5 rounded-lg border text-left shrink-0 transition-colors ${
+                                  isSelectedSess
+                                    ? 'bg-[#E10600] border-[#E10600] text-[#F8FAFC]'
+                                    : isDone
+                                    ? 'bg-[#121316] border-emerald-500/40 text-[#F8FAFC] hover:border-emerald-400 cursor-pointer'
+                                    : 'bg-[#0A0A0C]/60 border-[#1E2028] text-[#8E95A5] opacity-70 cursor-default'
+                                }`}
                               >
-                                FL
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[11px] font-bold">
+                                    {sess.name}
+                                  </span>
+                                  <span
+                                    className={`px-1 py-0.2 rounded text-[9px] font-extrabold uppercase ${
+                                      isSelectedSess
+                                        ? 'bg-black/30 text-white'
+                                        : isDone
+                                        ? 'bg-emerald-500/20 text-emerald-300'
+                                        : 'bg-[#181A20] text-[#8E95A5]'
+                                    }`}
+                                  >
+                                    {isDone ? 'DONE' : 'UPCOMING'}
+                                  </span>
+                                </div>
+                                {isSelectedSess && sess.fastestOrWinnerSummary && (
+                                  <div className="text-[10px] tabular-nums mt-0.5 text-white/90 font-semibold">
+                                    ⚡ {sess.fastestOrWinnerSummary}
+                                  </div>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Timing Tower Column Headers */}
+                  <div className="px-4 py-2 bg-[#0A0A0C] border-b border-[#1E2028] flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#8E95A5]">
+                    <span>POS / DRIVER</span>
+                    <div className="flex items-center gap-4">
+                      <span>GAP / TIME</span>
+                      <span>
+                        {activeCustomSession ? 'TYRE / LAPS' : 'FINAL STINT TYRE'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Timing Tower Driver Rows */}
+                  {isF1Masked ? (
+                    <div className="p-6 text-center">
+                      <button
+                        type="button"
+                        onClick={() => setRevealF1Order(true)}
+                        className="px-4 py-2 rounded-xl border border-amber-400/50 bg-amber-500/10 text-amber-300 text-xs font-bold inline-flex items-center gap-2"
+                      >
+                        <Eye className="w-4 h-4 stroke-[1.5]" />
+                        <span>
+                          Avoid Spoilers Active • Tap to Reveal Classification
+                        </span>
+                      </button>
+                    </div>
+                  ) : activeCustomSession &&
+                    activeCustomSession.sessionResults &&
+                    activeCustomSession.sessionResults.length > 0 ? (
+                    <div
+                      data-testid={`live-center-custom-session-results-${activeCustomSession.id}`}
+                      className="divide-y divide-[#1E2028]"
+                    >
+                      {activeCustomSession.sessionResults.map((entry) => {
+                        const careerProfile =
+                          driverCareerCache[entry.driverCode] ||
+                          getBaselineDriverCareerProfile(entry.driverCode);
+                        return (
+                          <button
+                            key={`${activeCustomSession.id}-${entry.pos}`}
+                            type="button"
+                            onClick={() =>
+                              handleSelectDriver(
+                                `drv-${entry.driverCode.toLowerCase()}`,
+                                entry.driverCode
+                              )
+                            }
+                            className="w-full px-4 py-2.5 flex items-center justify-between gap-2 hover:bg-[#181A20] transition-colors text-left"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1 overflow-hidden">
+                              <span className="w-5 tabular-nums text-xs font-bold text-[#8E95A5] shrink-0">
+                                {entry.pos}
                               </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-1.5 text-[11px] text-[#8E95A5] tabular-nums truncate">
-                            <span className="truncate">{drv.constructorName}</span>
-                            <span className="shrink-0">•</span>
-                            <span className="shrink-0">Best {drv.bestLapTime}</span>
-                          </div>
-                          {drv.stintHistory && (
-                            <div
-                              data-testid={`driver-stint-history-${drv.driverCode}`}
-                              className="text-[10px] text-[#8E95A5] tabular-nums truncate mt-0.5"
-                            >
-                              Stints: {drv.stintHistory}
+                              <span
+                                className="w-1 h-8 rounded-full shrink-0"
+                                style={{
+                                  backgroundColor: entry.constructorColor,
+                                }}
+                              />
+                              <F1DriverAvatar
+                                src={careerProfile?.headshotUrl}
+                                name={entry.driverName}
+                                code={entry.driverCode}
+                                teamColor={entry.constructorColor}
+                                size="sm"
+                              />
+                              <div className="min-w-0 flex-1 overflow-hidden">
+                                <div className="flex items-center gap-1.5 overflow-hidden">
+                                  <span className="text-xs font-bold text-[#F8FAFC] truncate">
+                                    {entry.driverName}
+                                  </span>
+                                  {entry.pos === 1 && (
+                                    <span className="px-1.5 py-0.2 rounded-md bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[9px] font-bold shrink-0">
+                                      P1
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[11px] text-[#8E95A5] tabular-nums truncate">
+                                  <span className="truncate">
+                                    {entry.constructorName}
+                                  </span>
+                                  <span className="shrink-0">•</span>
+                                  <span className="shrink-0">
+                                    {activeCustomSession.name}
+                                  </span>
+                                </div>
+                              </div>
                             </div>
-                          )}
-                        </div>
-                      </div>
 
-                      <div className="flex items-center gap-3 shrink-0">
-                        <div className="text-right tabular-nums">
-                          <div className="text-xs font-bold text-[#F8FAFC]">
-                            {drv.gapToLeader}
-                          </div>
-                          <div className="text-[10px] text-[#8E95A5]">
-                            {drv.interval}
-                          </div>
-                        </div>
+                            <div className="flex items-center gap-3 shrink-0">
+                              <div className="text-right tabular-nums">
+                                <div className="text-xs font-bold text-[#F8FAFC]">
+                                  {entry.timeOrGap}
+                                </div>
+                                {typeof entry.lapsCompleted === 'number' && (
+                                  <div className="text-[10px] text-[#8E95A5]">
+                                    {entry.lapsCompleted} Laps
+                                  </div>
+                                )}
+                              </div>
+                              {entry.tyreCompound && (
+                                <TyreCompoundBadge
+                                  compound={entry.tyreCompound}
+                                  ageLaps={entry.lapsCompleted || 12}
+                                />
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-[#1E2028]">
+                      {activeF1.drivers.map((drv) => {
+                        const careerProfile =
+                          driverCareerCache[drv.driverId] ||
+                          driverCareerCache[drv.driverCode] ||
+                          activeF1.driverCareerRegistry[drv.driverId] ||
+                          getBaselineDriverCareerProfile(drv.driverCode);
 
-                        <div
-                          data-testid={`driver-last-stint-${drv.driverCode}`}
-                          className="flex flex-col items-end gap-0.5"
-                        >
-                          <TyreCompoundBadge
-                            compound={drv.tyreCompound}
-                            ageLaps={drv.tyreAgeLaps}
-                          />
-                          {drv.lastStintRange && (
-                            <span className="text-[9px] font-semibold text-[#8E95A5] tabular-nums">
-                              {drv.lastStintRange}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+                        return (
+                          <button
+                            key={drv.driverId}
+                            type="button"
+                            onClick={() =>
+                              handleSelectDriver(drv.driverId, drv.driverCode)
+                            }
+                            aria-label={`View career statistics for ${drv.driverName}`}
+                            className="w-full px-4 py-2.5 flex items-center justify-between gap-2 hover:bg-[#181A20] transition-colors text-left"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1 overflow-hidden">
+                              <span className="w-5 tabular-nums text-xs font-bold text-[#8E95A5] shrink-0">
+                                {drv.position}
+                              </span>
+
+                              <span
+                                className="w-1 h-8 rounded-full shrink-0"
+                                style={{ backgroundColor: drv.constructorColor }}
+                              />
+
+                              <F1DriverAvatar
+                                src={careerProfile?.headshotUrl}
+                                name={drv.driverName}
+                                code={drv.driverCode}
+                                teamColor={drv.constructorColor}
+                                size="sm"
+                              />
+
+                              <div className="min-w-0 flex-1 overflow-hidden">
+                                <div className="flex items-center gap-1.5 overflow-hidden">
+                                  <span className="text-xs font-bold text-[#F8FAFC] truncate">
+                                    {drv.driverName}
+                                  </span>
+                                  {drv.hasFastestLap && (
+                                    <span
+                                      title="Fastest Lap"
+                                      className="px-1.5 py-0.2 rounded-md bg-purple-500/25 border border-purple-400/40 text-purple-300 text-[9px] font-bold shrink-0"
+                                    >
+                                      FL
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[11px] text-[#8E95A5] tabular-nums truncate">
+                                  <span className="truncate">
+                                    {drv.constructorName}
+                                  </span>
+                                  <span className="shrink-0">•</span>
+                                  <span className="shrink-0">
+                                    Best {drv.bestLapTime}
+                                  </span>
+                                </div>
+                                {drv.stintHistory && (
+                                  <div
+                                    data-testid={`driver-stint-history-${drv.driverCode}`}
+                                    className="text-[10px] text-[#8E95A5] tabular-nums truncate mt-0.5"
+                                  >
+                                    Stints: {drv.stintHistory}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-3 shrink-0">
+                              <div className="text-right tabular-nums">
+                                <div className="text-xs font-bold text-[#F8FAFC]">
+                                  {drv.gapToLeader}
+                                </div>
+                                <div className="text-[10px] text-[#8E95A5]">
+                                  {drv.interval}
+                                </div>
+                              </div>
+
+                              <div
+                                data-testid={`driver-last-stint-${drv.driverCode}`}
+                                className="flex flex-col items-end gap-0.5"
+                              >
+                                <TyreCompoundBadge
+                                  compound={drv.tyreCompound}
+                                  ageLaps={drv.tyreAgeLaps}
+                                />
+                                {drv.lastStintRange && (
+                                  <span className="text-[9px] font-semibold text-[#8E95A5] tabular-nums">
+                                    {drv.lastStintRange}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </section>
       )}
