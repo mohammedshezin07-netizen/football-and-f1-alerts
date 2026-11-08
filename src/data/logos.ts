@@ -93,6 +93,12 @@ export const FOOTBALL_CLUB_LOGOS = {
   SCD: `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 4L56 14V32C56 47 45 56 32 60C19 56 8 47 8 32V14L32 4Z" fill="#0F172A" stroke="#EF4444" stroke-width="2.5"/><path d="M32 8L52 16.5V32C52 44.5 42.5 52.5 32 56" fill="#EF4444" opacity="0.3"/><text x="32" y="38" text-anchor="middle" font-family="Arial,sans-serif" font-weight="900" font-size="15" fill="#F8FAFC">SCD</text></svg>')}`, // Sporting Club Delhi
   MSC: `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 4L56 14V32C56 47 45 56 32 60C19 56 8 47 8 32V14L32 4Z" fill="#111827" stroke="#F8FAFC" stroke-width="2.5"/><path d="M16 18H48V26H16z" fill="#FFFFFF" opacity="0.2"/><text x="32" y="39" text-anchor="middle" font-family="Arial,sans-serif" font-weight="900" font-size="14" fill="#FFFFFF">MSC</text></svg>')}`, // Mohammedan SC
   MOH: `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><path d="M32 4L56 14V32C56 47 45 56 32 60C19 56 8 47 8 32V14L32 4Z" fill="#111827" stroke="#F8FAFC" stroke-width="2.5"/><path d="M16 18H48V26H16z" fill="#FFFFFF" opacity="0.2"/><text x="32" y="39" text-anchor="middle" font-family="Arial,sans-serif" font-weight="900" font-size="14" fill="#FFFFFF">MSC</text></svg>')}`, // Mohammedan SC (ESPN alias)
+  // Ligue 1 & UCL Opponents for Paris Saint-Germain (PSG)
+  LENS: 'https://a.espncdn.com/i/teamlogos/soccer/500/175.png', // RC Lens
+  ANG: 'https://a.espncdn.com/i/teamlogos/soccer/500/7868.png', // Angers SCO
+  TOU: 'https://a.espncdn.com/i/teamlogos/soccer/500/179.png',  // Toulouse FC
+  OL: 'https://a.espncdn.com/i/teamlogos/soccer/500/167.png',   // Olympique Lyonnais
+  SAL: 'https://a.espncdn.com/i/teamlogos/soccer/500/2790.png', // RB Salzburg
 } as const;
 
 export const APP_BRAND_LOGO =
@@ -105,6 +111,7 @@ export const COMPETITION_LOGOS = {
   LALIGA: 'https://crests.football-data.org/PD.png',
   SERIEA: 'https://crests.football-data.org/SA.png',
   BUNDESLIGA: 'https://crests.football-data.org/BL1.png',
+  LIGUE1: 'https://crests.football-data.org/FL1.png',
   ISL: 'https://a.espncdn.com/i/leaguelogos/soccer/500/2334.png',
 } as const;
 

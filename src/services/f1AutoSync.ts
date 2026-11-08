@@ -2322,8 +2322,20 @@ const SESSION_TOP_DRIVERS_POOL: Array<{
   { code: 'HAM', name: 'L. Hamilton', number: 44, team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
   { code: 'PIA', name: 'O. Piastri', number: 81, team: 'McLaren', teamCode: 'MCL', color: '#FF8000' },
   { code: 'SAI', name: 'C. Sainz', number: 55, team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+  { code: 'ALO', name: 'F. Alonso', number: 14, team: 'Aston Martin', teamCode: 'AMR', color: '#229971' },
+  { code: 'GAS', name: 'P. Gasly', number: 10, team: 'Alpine', teamCode: 'ALP', color: '#FF87BC' },
   { code: 'LAW', name: 'L. Lawson', number: 30, team: 'Racing Bulls', teamCode: 'VCARB', color: '#6692FF' },
   { code: 'BEA', name: 'O. Bearman', number: 87, team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+  { code: 'HAD', name: 'I. Hadjar', number: 6, team: 'Red Bull Racing', teamCode: 'RBR', color: '#3671C6' },
+  { code: 'ALB', name: 'A. Albon', number: 23, team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+  { code: 'OCO', name: 'E. Ocon', number: 31, team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+  { code: 'HUL', name: 'N. Hülkenberg', number: 27, team: 'Audi / Sauber', teamCode: 'SAU', color: '#52E252' },
+  { code: 'BOR', name: 'G. Bortoleto', number: 5, team: 'Audi / Sauber', teamCode: 'SAU', color: '#52E252' },
+  { code: 'STR', name: 'L. Stroll', number: 18, team: 'Aston Martin', teamCode: 'AMR', color: '#229971' },
+  { code: 'LIN', name: 'A. Lindblad', number: 41, team: 'Racing Bulls', teamCode: 'VCARB', color: '#6692FF' },
+  { code: 'COL', name: 'F. Colapinto', number: 43, team: 'Alpine', teamCode: 'ALP', color: '#FF87BC' },
+  { code: 'PER', name: 'S. Pérez', number: 11, team: 'Cadillac F1 Team', teamCode: 'CAD', color: '#C0C0C0' },
+  { code: 'BOT', name: 'V. Bottas', number: 77, team: 'Cadillac F1 Team', teamCode: 'CAD', color: '#C0C0C0' },
 ];
 
 function buildSessionTop10Classification(
@@ -2343,10 +2355,15 @@ function buildSessionTop10Classification(
   };
 
   const raceWinner = findLeaderFromWinnerSummary();
-  const rotationOffset = (round * 3 + sessionIdx * 2) % SESSION_TOP_DRIVERS_POOL.length;
+  const top10Pool = SESSION_TOP_DRIVERS_POOL.slice(0, 10);
+  const midfieldPool = SESSION_TOP_DRIVERS_POOL.slice(10);
+  const rotationOffset = (round * 3 + sessionIdx * 2) % top10Pool.length;
+  const midRotationOffset = (round * 2 + sessionIdx) % midfieldPool.length;
   const rotated = [
-    ...SESSION_TOP_DRIVERS_POOL.slice(rotationOffset),
-    ...SESSION_TOP_DRIVERS_POOL.slice(0, rotationOffset),
+    ...top10Pool.slice(rotationOffset),
+    ...top10Pool.slice(0, rotationOffset),
+    ...midfieldPool.slice(midRotationOffset),
+    ...midfieldPool.slice(0, midRotationOffset),
   ];
 
   // For Qualifying (sessionIdx === 3) or Grand Prix (sessionIdx === 4), put the race winner at or near P1
@@ -2370,9 +2387,9 @@ function buildSessionTop10Classification(
   };
 
   const p1LapStr = formatLapSec(baseSeconds);
-  const results: F1SessionResultEntry[] = rotated.slice(0, 10).map((drv, idx) => {
-    const delta = idx === 0 ? 0 : Number((idx * 0.142 + ((round + idx) % 4) * 0.031).toFixed(3));
-    const raceDelta = idx === 0 ? 0 : Number((idx * 3.45 + ((round + idx) % 5) * 0.82).toFixed(3));
+  const results: F1SessionResultEntry[] = rotated.slice(0, 22).map((drv, idx) => {
+    const delta = idx === 0 ? 0 : Number((idx * 0.088 + ((round + idx) % 4) * 0.021).toFixed(3));
+    const raceDelta = idx === 0 ? 0 : Number((idx * 2.85 + ((round + idx) % 5) * 0.62).toFixed(3));
     const bestLap = formatLapSec(baseSeconds + delta);
     const compound: TyreCompound = isRaceOrSprint
       ? idx % 3 === 0
@@ -2385,7 +2402,22 @@ function buildSessionTop10Classification(
       ? sessionIdx === 2
         ? Math.max(17, Math.round(totalLaps * 0.33))
         : totalLaps
+      : sessionIdx === 3
+      ? idx < 10
+        ? 18
+        : idx < 16
+        ? 13
+        : 8
       : 22 + ((round + idx + sessionIdx) % 9);
+
+    const qualiKnockoutSuffix =
+      !isRaceOrSprint && sessionIdx === 3
+        ? idx >= 16
+          ? ' (Q1)'
+          : idx >= 10
+          ? ' (Q2)'
+          : ''
+        : '';
 
     return {
       pos: idx + 1,
@@ -2402,7 +2434,7 @@ function buildSessionTop10Classification(
             : p1LapStr
           : isRaceOrSprint
           ? `+${raceDelta.toFixed(3)}s`
-          : `+${delta.toFixed(3)}s`,
+          : `+${delta.toFixed(3)}s${qualiKnockoutSuffix}`,
       bestLapTime: bestLap,
       tyreCompound: compound,
       lapsCompleted: lapsDone,

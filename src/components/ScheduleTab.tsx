@@ -143,7 +143,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
 }) => {
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('THIS_WEEK');
   const [sportFilter, setSportFilter] = useState<SportFilter>('ALL');
-  const [selectedTeamCode, setSelectedTeamCode] = useState<string>('ALL_TEAMS');
+  const [selectedTeamCode, setSelectedTeamCode] = useState<string>('ALL_FOLLOWED');
   const [teamSearchQuery, setTeamSearchQuery] = useState<string>('');
   const [localClashSettings, setLocalClashSettings] =
     useState<ClashDetectorSettings>(DEFAULT_CLASH_SETTINGS);
@@ -248,6 +248,17 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
     ]
   );
 
+  // If a user unfollows the currently selected single team pill, reset filter to ALL_FOLLOWED
+  useEffect(() => {
+    if (
+      selectedTeamCode !== 'ALL_FOLLOWED' &&
+      selectedTeamCode !== 'ALL_TEAMS' &&
+      !followedTeamCodes.includes(selectedTeamCode)
+    ) {
+      setSelectedTeamCode('ALL_FOLLOWED');
+    }
+  }, [followedTeamCodes, selectedTeamCode]);
+
   // For Formula 1 calendar display, use the selected season's full calendar enriched with any synced sessions
   const activeF1SeasonCalendar = useMemo(() => {
     if (selectedF1Season === 2026) {
@@ -256,12 +267,38 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
         : F1_2026_FULL_SEASON;
       return base2026.map((wknd) => {
         const syncedMatch = f1Weekends.find(
-          (fw) => fw.id === wknd.id || fw.circuitSvgId === wknd.circuitSvgId
+          (fw) =>
+            fw.id === wknd.id ||
+            fw.round === wknd.round ||
+            fw.circuitSvgId === wknd.circuitSvgId
         );
-        if (!syncedMatch) return wknd;
+        if (!syncedMatch || !syncedMatch.sessions?.length) return wknd;
+        const mergedSessions = wknd.sessions.map((baseSess, idx) => {
+          const syncedSess =
+            syncedMatch.sessions.find(
+              (ss) => ss.id === baseSess.id || ss.name === baseSess.name
+            ) || syncedMatch.sessions[idx];
+          if (!syncedSess) return baseSess;
+          const bestResults =
+            (baseSess.sessionResults?.length || 0) >=
+            (syncedSess.sessionResults?.length || 0)
+              ? baseSess.sessionResults
+              : syncedSess.sessionResults;
+          return {
+            ...baseSess,
+            ...syncedSess,
+            status:
+              baseSess.status === 'COMPLETED' || syncedSess.status === 'COMPLETED'
+                ? ('COMPLETED' as const)
+                : syncedSess.status || baseSess.status,
+            fastestOrWinnerSummary:
+              syncedSess.fastestOrWinnerSummary || baseSess.fastestOrWinnerSummary,
+            sessionResults: bestResults,
+          };
+        });
         return {
           ...wknd,
-          sessions: syncedMatch.sessions?.length ? syncedMatch.sessions : wknd.sessions,
+          sessions: mergedSessions,
         };
       });
     }
@@ -542,7 +579,6 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 type="button"
                 onClick={() => {
                   setSportFilter(sport.id);
-                  setSelectedTeamCode('ALL_TEAMS');
                 }}
                 className={`min-h-[32px] px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
                   active
@@ -559,6 +595,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
 
           <button
             type="button"
+            data-testid="filter-my-favorites-btn"
             onClick={() =>
               setSelectedTeamCode((prev) =>
                 prev === 'ALL_FOLLOWED' ? 'ALL_TEAMS' : 'ALL_FOLLOWED'
@@ -570,7 +607,20 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 : 'bg-[#181A20] text-[#8E95A5] hover:text-[#F8FAFC] border border-[#1E2028]'
             }`}
           >
-            My Favorites
+            My Favorites ({followedTeamCodes.length})
+          </button>
+
+          <button
+            type="button"
+            data-testid="filter-all-teams-btn"
+            onClick={() => setSelectedTeamCode('ALL_TEAMS')}
+            className={`min-h-[32px] px-3 py-1 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+              selectedTeamCode === 'ALL_TEAMS'
+                ? 'bg-[#F8FAFC] text-[#0A0A0C] font-bold'
+                : 'bg-[#181A20] text-[#8E95A5] hover:text-[#F8FAFC] border border-[#1E2028]'
+            }`}
+          >
+            All Clubs
           </button>
 
           <button
@@ -1459,35 +1509,35 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                           }`}
                         >
                           {/* Subtle Competition Header */}
-                          <div className="flex items-center justify-between gap-2 mb-2 text-[11px] text-[#8E95A5]">
-                            <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="flex items-center justify-between gap-2 mb-2 text-[11px] text-[#8E95A5] overflow-hidden">
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
                               <OfficialLogo
                                 src={match.competitionLogo}
                                 alt={match.competition}
                                 size="xs"
                               />
-                              <span className="truncate">
+                              <span className="truncate min-w-0">
                                 {match.competition}
                               </span>
                             </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
+                            <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
                               {isFinished && (
-                                <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded-md uppercase">
+                                <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-0.5 rounded-md uppercase whitespace-nowrap">
                                   FINAL • FT
                                 </span>
                               )}
                               {isLive && (
-                                <span className="text-[10px] font-bold text-[#F8FAFC] bg-[#E10600] px-1.5 py-0.5 rounded-md uppercase animate-pulse">
+                                <span className="text-[10px] font-bold text-[#F8FAFC] bg-[#E10600] px-1.5 py-0.5 rounded-md uppercase animate-pulse whitespace-nowrap">
                                   LIVE {match.liveMinute || ''}
                                 </span>
                               )}
                               {isTBD && !isFinished && (
-                                <span className="text-[10px] font-semibold text-amber-300 bg-amber-400/10 border border-amber-400/30 px-1.5 py-0.5 rounded-md">
+                                <span className="text-[10px] font-semibold text-amber-300 bg-amber-400/10 border border-amber-400/30 px-1.5 py-0.5 rounded-md whitespace-nowrap">
                                   Time Not Declared
                                 </span>
                               )}
                               {hasClash && !isTBD && !isFinished && (
-                                <span className="text-[10px] font-semibold text-amber-400">
+                                <span className="text-[10px] font-semibold text-amber-400 whitespace-nowrap">
                                   {matchClashes.some(
                                     (c) =>
                                       c.clashType === 'FOOTBALL_VS_FOOTBALL'
@@ -1499,9 +1549,9 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                               {armed && !isFinished && (
                                 <span
                                   data-testid={`armed-badge-${match.id}`}
-                                  className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[10px] font-bold text-amber-300 flex items-center gap-1"
+                                  className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[10px] font-bold text-amber-300 flex items-center gap-1 whitespace-nowrap"
                                 >
-                                  <Bell className="w-2.5 h-2.5 text-amber-400 stroke-[2.2]" />
+                                  <Bell className="w-2.5 h-2.5 text-amber-400 stroke-[2.2] shrink-0" />
                                   <span>Active / Armed</span>
                                 </span>
                               )}
@@ -1524,7 +1574,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                       mode: 'ICS',
                                     });
                                   }}
-                                  className="h-6 w-6 rounded-md bg-[#181A20] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors"
+                                  className="h-6 w-6 rounded-md bg-[#181A20] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors shrink-0"
                                 >
                                   <CalendarPlus className="w-3 h-3" />
                                 </button>
@@ -1816,9 +1866,9 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                       />
                     </div>
 
-                    {/* Inline Verified IST Session Breakdown & Fastest/Winner Results */}
+                    {/* Inline Verified IST Session Breakdown */}
                     {showInlineSessions && wknd.sessions?.length > 0 && (
-                      <div className="pt-2.5 border-t border-[#1E2028] grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      <div className="pt-2.5 border-t border-[#1E2028] grid grid-cols-1 gap-1.5">
                         {wknd.sessions.map((sess) => {
                           const sessRuntimeStatus =
                             evaluateF1SessionRuntimeStatus(sess);
@@ -1826,6 +1876,9 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                           const isSessDone =
                             sessRuntimeStatus === 'COMPLETED' ||
                             wknd.status === 'COMPLETED';
+                          const compactSessTime = formatSimpleCardTime(
+                            sess.startTimeISO
+                          );
 
                           return (
                             <div
@@ -1835,7 +1888,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                 e.stopPropagation();
                                 openF1WeekendModal(wknd, sess.id);
                               }}
-                              className={`px-2.5 py-1.5 rounded-lg text-[11px] space-y-1 transition-colors ${
+                              className={`px-2.5 py-2 rounded-lg text-[11px] transition-colors overflow-hidden ${
                                 isSessLive
                                   ? 'bg-[#E10600]/20 border border-[#E10600]/60'
                                   : isSessDone && sess.fastestOrWinnerSummary
@@ -1843,35 +1896,40 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                   : 'bg-[#181A20] border border-[#1E2028]'
                               }`}
                             >
-                              <div className="flex items-center justify-between gap-2">
-                                <div className="flex items-center gap-1.5 min-w-0">
+                              <div className="flex items-center justify-between gap-2 overflow-hidden">
+                                <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
                                   <span
-                                    className={`font-bold uppercase ${
+                                    className={`font-bold uppercase truncate min-w-0 ${
                                       isSessLive
                                         ? 'text-[#F8FAFC]'
                                         : sess.name === 'Grand Prix'
                                         ? 'text-[#E10600]'
-                                        : sess.name === 'Qualifying'
+                                        : sess.name === 'Qualifying' ||
+                                          sess.name === 'Sprint Qualifying'
                                         ? 'text-amber-400'
                                         : 'text-[#F8FAFC]'
                                     }`}
                                   >
                                     {sess.name}
                                   </span>
-                                  <span className="text-[#8E95A5]">•</span>
-                                  <span className="text-[#8E95A5] font-medium tabular-nums">
+                                  <span className="text-[#8E95A5] shrink-0">
+                                    •
+                                  </span>
+                                  <span className="text-[#8E95A5] font-medium tabular-nums whitespace-nowrap shrink-0">
                                     {sess.istDateLabel}
                                   </span>
                                 </div>
-                                <div className="flex items-center gap-1.5 shrink-0">
+                                <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
                                   {isSessLive && (
-                                    <span className="px-1.5 py-0.2 rounded-md bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase">
+                                    <span className="px-1.5 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase whitespace-nowrap shrink-0">
                                       LIVE
                                     </span>
                                   )}
                                   {isSessDone && !isSessLive && (
-                                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 uppercase">
-                                      DONE • TAP FOR RESULTS
+                                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 uppercase whitespace-nowrap shrink-0">
+                                      {sess.sessionResults?.length
+                                        ? 'DONE • TAP FOR GRID'
+                                        : 'DONE'}
                                     </span>
                                   )}
                                   {!isSessDone &&
@@ -1879,14 +1937,14 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                     isAlarmArmed(sess.id) && (
                                       <span
                                         data-testid={`armed-badge-${sess.id}`}
-                                        className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[9px] font-bold text-amber-300 flex items-center gap-0.5"
+                                        className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[9px] font-bold text-amber-300 flex items-center gap-0.5 whitespace-nowrap shrink-0"
                                       >
-                                        <Bell className="w-2.5 h-2.5 text-amber-400" />
+                                        <Bell className="w-2.5 h-2.5 text-amber-400 shrink-0" />
                                         <span>Active / Armed</span>
                                       </span>
                                     )}
-                                  <span className="font-bold text-[#F8FAFC] tabular-nums">
-                                    {sess.istTimeLabel}
+                                  <span className="font-bold text-[#F8FAFC] tabular-nums whitespace-nowrap shrink-0">
+                                    {compactSessTime}
                                   </span>
                                   {!isSessDone && !isSessLive && (
                                     <button
@@ -1908,7 +1966,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                           mode: 'ICS',
                                         });
                                       }}
-                                      className="h-5 w-5 rounded bg-[#121316] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors"
+                                      className="h-5 w-5 rounded bg-[#121316] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors shrink-0"
                                     >
                                       <CalendarPlus className="w-3 h-3" />
                                     </button>
@@ -2308,7 +2366,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                       Session Schedule &amp; Results
                     </div>
                     <span className="text-[10px] text-[#8E95A5]">
-                      Tap completed session for P1–P10
+                      Tap completed session for Full Grid
                     </span>
                   </div>
 
@@ -2400,11 +2458,11 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                 : ''
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2">
+                            <div className="flex items-center justify-between gap-2 overflow-hidden">
+                              <div className="min-w-0 flex-1 overflow-hidden">
+                                <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
                                   <span
-                                    className={`text-xs font-bold ${
+                                    className={`text-xs font-bold truncate min-w-0 ${
                                       session.name === 'Grand Prix'
                                         ? 'text-[#E10600]'
                                         : 'text-[#F8FAFC]'
@@ -2412,24 +2470,24 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                   >
                                     {session.name}
                                   </span>
-                                  <span className="text-[11px] text-[#8E95A5]">
-                                    {session.istDateLabel}
+                                  <span className="text-[11px] text-[#8E95A5] whitespace-nowrap shrink-0">
+                                    • {session.istDateLabel}
                                   </span>
                                 </div>
-                                <div className="text-xs font-semibold text-[#F8FAFC] tabular-nums mt-0.5 flex items-center gap-1">
-                                  <Clock className="w-3 h-3 text-[#8E95A5]" />
+                                <div className="text-xs font-semibold text-[#F8FAFC] tabular-nums mt-0.5 flex items-center gap-1 whitespace-nowrap">
+                                  <Clock className="w-3 h-3 text-[#8E95A5] shrink-0" />
                                   <span>{simpleSessionTime}</span>
                                 </div>
                               </div>
 
-                              <div className="flex items-center gap-1.5 shrink-0">
+                              <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
                                 {isSessionLive ? (
-                                  <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase animate-pulse">
+                                  <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase animate-pulse whitespace-nowrap">
                                     LIVE
                                   </span>
                                 ) : isSessionFinished ? (
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase">
+                                  <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+                                    <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase whitespace-nowrap">
                                       DONE
                                     </span>
                                     {hasSessionResults && (
@@ -2444,7 +2502,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                               : session.id
                                           );
                                         }}
-                                        className="px-2 py-0.5 rounded-md bg-[#121316] border border-[#1E2028] text-[10px] font-semibold text-[#F8FAFC] flex items-center gap-1"
+                                        className="px-2 py-0.5 rounded-md bg-[#121316] border border-[#1E2028] text-[10px] font-semibold text-[#F8FAFC] flex items-center gap-1 whitespace-nowrap"
                                       >
                                         <span>
                                           {isSessionExpanded
@@ -2452,9 +2510,9 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                             : 'Results'}
                                         </span>
                                         {isSessionExpanded ? (
-                                          <ChevronUp className="w-3 h-3" />
+                                          <ChevronUp className="w-3 h-3 shrink-0" />
                                         ) : (
-                                          <ChevronDown className="w-3 h-3" />
+                                          <ChevronDown className="w-3 h-3 shrink-0" />
                                         )}
                                       </button>
                                     )}
@@ -2561,7 +2619,10 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                               className="bg-[#0A0A0C] border-t border-[#1E2028] px-3 py-2.5 space-y-1.5"
                             >
                               <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#8E95A5] px-1">
-                                <span>POS / DRIVER ({session.name})</span>
+                                <span>
+                                  POS / DRIVER ({session.name} •{' '}
+                                  {session.sessionResults.length} DRIVERS)
+                                </span>
                                 <div className="flex items-center gap-3">
                                   <span>TIME / GAP</span>
                                   <span>TYRE / LAPS</span>

@@ -54,6 +54,7 @@ interface LiveCenterTabProps {
   onCacheDriverStats: (driver: F1DriverCareerStats) => void;
   upcomingMatches?: FootballMatch[];
   upcomingF1Weekends?: F1Weekend[];
+  followedTeamCodes?: string[];
 }
 
 export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
@@ -67,8 +68,10 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
   onCacheDriverStats,
   upcomingMatches = UPCOMING_FOOTBALL_MATCHES,
   upcomingF1Weekends = UPCOMING_F1_WEEKENDS,
+  followedTeamCodes = [],
 }) => {
   const [sportViewMode, setSportViewMode] = useState<LiveSportViewMode>('ALL');
+  const [footballFeedFilter, setFootballFeedFilter] = useState<'FOLLOWED' | 'ALL'>('FOLLOWED');
   const [selectedFootballId, setSelectedFootballId] = useState<string>(
     LIVE_FOOTBALL_FEEDS[0]?.id || liveFootball.id
   );
@@ -93,8 +96,167 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
   const [selectedDriver, setSelectedDriver] =
     useState<F1DriverCareerStats | null>(null);
 
+  // Merge upcomingF1Weekends with baseline UPCOMING_F1_WEEKENDS & F1_2026_FULL_SEASON
+  // so completed sessions (including 22-driver Qualifying grid) are always up to date even if localStorage had an older weekend object.
+  const enrichedF1Weekends = useMemo<F1Weekend[]>(() => {
+    const baselinePool = [...UPCOMING_F1_WEEKENDS, ...F1_2026_FULL_SEASON];
+    return upcomingF1Weekends.map((wknd) => {
+      const seedWknd = baselinePool.find(
+        (b) => b.id === wknd.id || b.round === wknd.round
+      );
+      if (!seedWknd) return wknd;
+      return {
+        ...seedWknd,
+        ...wknd,
+        sessions: wknd.sessions.map((sess) => {
+          const seedSess = seedWknd.sessions.find(
+            (s) => s.id === sess.id || s.name === sess.name
+          );
+          if (!seedSess) return sess;
+          return {
+            ...seedSess,
+            ...sess,
+            status:
+              seedSess.status === 'COMPLETED' || sess.status === 'COMPLETED'
+                ? ('COMPLETED' as const)
+                : sess.status,
+            fastestOrWinnerSummary:
+              sess.fastestOrWinnerSummary || seedSess.fastestOrWinnerSummary,
+            sessionResults:
+              sess.sessionResults &&
+              sess.sessionResults.length >= (seedSess.sessionResults?.length || 0)
+                ? sess.sessionResults
+                : seedSess.sessionResults,
+          };
+        }),
+      };
+    });
+  }, [upcomingF1Weekends]);
+
+  // Combine verified LIVE_FOOTBALL_FEEDS with any newly completed/live matches from upcomingMatches
+  const allRecentFootballFeeds = useMemo(() => {
+    const feeds = [...LIVE_FOOTBALL_FEEDS];
+    const existingKeys = new Set(
+      feeds.map((f) => `${f.homeTeam.code}_${f.awayTeam.code}`)
+    );
+
+    const completedOrLiveMatches = upcomingMatches.filter(
+      (m) =>
+        (m.liveStatus === 'FINAL' || m.liveStatus === 'LIVE') &&
+        typeof m.homeScore === 'number' &&
+        typeof m.awayScore === 'number'
+    );
+
+    for (const m of completedOrLiveMatches) {
+      const key = `${m.homeTeam.code}_${m.awayTeam.code}`;
+      if (existingKeys.has(key)) {
+        // Ensure score in feed matches latest verified match score
+        const idx = feeds.findIndex(
+          (f) => `${f.homeTeam.code}_${f.awayTeam.code}` === key
+        );
+        if (idx !== -1) {
+          const parsedMin = parseInt(String(m.liveMinute || '90'), 10);
+          feeds[idx] = {
+            ...feeds[idx],
+            minute: Number.isNaN(parsedMin) ? feeds[idx].minute : parsedMin,
+            homeTeam: {
+              ...feeds[idx].homeTeam,
+              score: m.homeScore ?? feeds[idx].homeTeam.score,
+            },
+            awayTeam: {
+              ...feeds[idx].awayTeam,
+              score: m.awayScore ?? feeds[idx].awayTeam.score,
+            },
+          };
+        }
+        continue;
+      }
+
+      existingKeys.add(key);
+      const summaryParts: string[] = (m.scorersSummary || '')
+        .split('•')
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+      const parsedMin = parseInt(String(m.liveMinute || '90'), 10);
+
+      feeds.push({
+        id: `live-dyn-${m.id}`,
+        competition: m.competition,
+        competitionLogo: m.competitionLogo,
+        venue: m.venue,
+        minute: Number.isNaN(parsedMin) ? 90 : parsedMin,
+        second: 0,
+        status: m.liveStatus === 'LIVE' ? 'LIVE 2ND HALF' : 'FT',
+        stage: `${m.matchweek} (${m.istDateLabel})`,
+        homeTeam: {
+          name: m.homeTeam.name,
+          code: m.homeTeam.code,
+          logo: m.homeTeam.logo,
+          score: m.homeScore ?? 0,
+          possession: 52,
+          xG: ((m.homeScore ?? 1) * 0.85 + 0.4).toFixed(2),
+          shots: Math.max(6, (m.homeScore ?? 1) * 4 + 5),
+          shotsOnTarget: Math.max(2, (m.homeScore ?? 1) * 2 + 2),
+          corners: Math.max(3, (m.homeScore ?? 1) * 2 + 2),
+          fouls: 9,
+          scorers: [],
+        },
+        awayTeam: {
+          name: m.awayTeam.name,
+          code: m.awayTeam.code,
+          logo: m.awayTeam.logo,
+          score: m.awayScore ?? 0,
+          possession: 48,
+          xG: ((m.awayScore ?? 1) * 0.82 + 0.35).toFixed(2),
+          shots: Math.max(5, (m.awayScore ?? 1) * 4 + 4),
+          shotsOnTarget: Math.max(2, (m.awayScore ?? 1) * 2 + 1),
+          corners: Math.max(2, (m.awayScore ?? 1) * 2 + 1),
+          fouls: 11,
+          scorers: [],
+        },
+        commentary:
+          summaryParts.length > 0
+            ? summaryParts.map((part: string, i: number) => ({
+                id: `comm-${m.id}-${i}`,
+                minute: i === 0 ? 'FT' : `${25 + i * 22}'`,
+                type: 'GOAL' as const,
+                text: `${part} — Official verified match event (${m.homeTeam.code} ${m.homeScore}-${m.awayScore} ${m.awayTeam.code}).`,
+              }))
+            : [
+                {
+                  id: `comm-${m.id}-ft`,
+                  minute: 'FT',
+                  type: 'INFO' as const,
+                  text: `Full Time at ${m.venue}: ${m.homeTeam.name} ${m.homeScore} – ${m.awayScore} ${m.awayTeam.name}.`,
+                },
+              ],
+        keyPlayers: [],
+      });
+    }
+
+    return feeds;
+  }, [upcomingMatches]);
+
+  const displayedFootballFeeds = useMemo(() => {
+    if (footballFeedFilter === 'FOLLOWED' && followedTeamCodes.length > 0) {
+      const followedSet = new Set(followedTeamCodes.map((c) => c.toUpperCase()));
+      const matching = allRecentFootballFeeds.filter(
+        (f) =>
+          followedSet.has(f.homeTeam.code.toUpperCase()) ||
+          followedSet.has(f.awayTeam.code.toUpperCase())
+      );
+      if (matching.length > 0) {
+        return matching;
+      }
+    }
+    return allRecentFootballFeeds;
+  }, [allRecentFootballFeeds, footballFeedFilter, followedTeamCodes]);
+
   const activeFootball =
-    LIVE_FOOTBALL_FEEDS.find((f) => f.id === selectedFootballId) || liveFootball;
+    displayedFootballFeeds.find((f) => f.id === selectedFootballId) ||
+    allRecentFootballFeeds.find((f) => f.id === selectedFootballId) ||
+    displayedFootballFeeds[0] ||
+    liveFootball;
   const activeF1 =
     selectedF1Id === liveF1.id
       ? liveF1
@@ -102,7 +264,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
 
   // Match the selected F1 race in Live Center to its full F1Weekend (with FP1, FP2, FP3, Quali, GP session results)
   const matchedF1Weekend = useMemo(() => {
-    const allWeekends = [...upcomingF1Weekends, ...F1_2026_FULL_SEASON];
+    const allWeekends = [...enrichedF1Weekends, ...F1_2026_FULL_SEASON];
     if (selectedF1Id.startsWith('f1-wknd-') || selectedF1Id.startsWith('f1-2026-')) {
       return allWeekends.find((w) => w.id === selectedF1Id) || null;
     }
@@ -114,7 +276,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
           w.grandPrixName.toLowerCase().includes(targetName.replace(' grand prix', ''))
       ) || null
     );
-  }, [selectedF1Id, activeF1.grandPrixName, upcomingF1Weekends]);
+  }, [selectedF1Id, activeF1.grandPrixName, enrichedF1Weekends]);
 
   // STRICT REAL-TIME CREDIBILITY GATEKEEPER:
   // Check whether any match, F1 session, or F1 Grand Prix weekend (from FP1 start until Grand Prix finish) is live right now.
@@ -130,32 +292,39 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
           nowMs
         ) === 'LIVE'
     );
-    const liveSessions = upcomingF1Weekends.flatMap((w) =>
+    const liveSessions = enrichedF1Weekends.flatMap((w) =>
       w.sessions.filter(
         (s) => evaluateF1SessionRuntimeStatus(s, nowMs) === 'LIVE'
       )
     );
-    const liveWeekends = upcomingF1Weekends.filter(
+    const liveWeekends = enrichedF1Weekends.filter(
       (w) => evaluateF1WeekendLiveStatus(w, nowMs) === 'LIVE'
     );
     return { liveMatches, liveSessions, liveWeekends };
-  }, [upcomingMatches, upcomingF1Weekends]);
+  }, [upcomingMatches, enrichedF1Weekends]);
 
   const hasAnyLiveEventNow =
     genuinelyLiveEvents.liveMatches.length > 0 ||
     genuinelyLiveEvents.liveSessions.length > 0 ||
     genuinelyLiveEvents.liveWeekends.length > 0;
 
-  // Find the single Next Upcoming Match / F1 Session for the preview card
+  // Find the single Next Upcoming Match / F1 Session for the preview card (prioritizing followed teams)
   const nextUpcomingPreview = useMemo(() => {
     const nowMs = Date.now();
-    const nextMatch = [...upcomingMatches]
-      .filter((m) => Date.parse(m.startTimeISO) > nowMs)
+    const followedSet = new Set(followedTeamCodes.map((c) => c.toUpperCase()));
+    const futureMatches = [...upcomingMatches]
+      .filter((m) => Date.parse(m.startTimeISO) > nowMs && m.liveStatus !== 'FINAL')
       .sort(
         (a, b) => Date.parse(a.startTimeISO) - Date.parse(b.startTimeISO)
-      )[0];
+      );
+    const followedNextMatch = futureMatches.find(
+      (m) =>
+        followedSet.has(m.homeTeam.code.toUpperCase()) ||
+        followedSet.has(m.awayTeam.code.toUpperCase())
+    );
+    const nextMatch = followedNextMatch || futureMatches[0];
 
-    const nextF1Session = upcomingF1Weekends
+    const nextF1Session = enrichedF1Weekends
       .flatMap((w) =>
         w.sessions.map((s) => ({
           weekend: w,
@@ -182,7 +351,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
       return { type: 'F1' as const, f1: nextF1Session };
     }
     return null;
-  }, [upcomingMatches, upcomingF1Weekends, sportViewMode]);
+  }, [upcomingMatches, enrichedF1Weekends, sportViewMode, followedTeamCodes]);
 
   const handleSelectPlayer = (playerId: string) => {
     const cached = playerStatsCache[playerId];
@@ -308,36 +477,36 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                   }
                   className="w-full flex items-center justify-between gap-3 text-left"
                 >
-                  <div className="space-y-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase tracking-wider animate-pulse">
+                  <div className="space-y-1 min-w-0 flex-1 overflow-hidden">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase tracking-wider animate-pulse whitespace-nowrap">
                         LIVE • RACE WEEKEND
                       </span>
-                      <span className="text-[11px] font-semibold text-[#8E95A5] uppercase">
+                      <span className="text-[11px] font-semibold text-[#8E95A5] uppercase whitespace-nowrap">
                         ROUND {wknd.round}
                       </span>
-                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold">
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold whitespace-nowrap">
                         {isBannerExpanded
                           ? 'HIDE SESSIONS ▲'
-                          : `${completedSessions.length}/${wknd.sessions.length} SESSIONS DONE • TAP RACE FOR RESULTS ▼`}
+                          : `${completedSessions.length}/${wknd.sessions.length} DONE • TAP FOR RESULTS ▼`}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 min-w-0 overflow-hidden">
                       <OfficialLogo
                         src={wknd.countryFlagUrl}
                         alt={wknd.hostName || wknd.countryName || wknd.city}
                         shape="Flag"
                         size="xs"
                       />
-                      <h2 className="font-display text-base font-extrabold text-[#F8FAFC] truncate">
+                      <h2 className="font-display text-base font-extrabold text-[#F8FAFC] truncate min-w-0">
                         {wknd.grandPrixName}
                       </h2>
                     </div>
                     {activeSess && (
-                      <p className="text-xs text-[#F8FAFC] font-medium">
+                      <p className="text-xs text-[#F8FAFC] font-medium truncate">
                         {liveSess
-                          ? `Active Session: ${liveSess.name} (${liveSess.istTimeLabel})`
-                          : `Weekend Live Through Grand Prix • Next: ${activeSess.name} (${activeSess.istDateLabel} • ${activeSess.istTimeLabel})`}
+                          ? `Active: ${liveSess.name} • ${formatSimpleCardTime(liveSess.startTimeISO)}`
+                          : `Next: ${activeSess.name} • ${activeSess.istDateLabel} (${formatSimpleCardTime(activeSess.startTimeISO)})`}
                       </p>
                     )}
                   </div>
@@ -352,13 +521,13 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                 {/* Weekend Session Strip: ONLY shown after pressing the race banner, and fastest driver ONLY shown after pressing a DONE session */}
                 {isBannerExpanded && (
                   <div className="pt-2 border-t border-[#1E2028]/80 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#8E95A5]">
-                        Weekend Sessions • Press Any Done Session To Reveal Results
+                    <div className="flex items-center justify-between gap-2 overflow-hidden">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#8E95A5] truncate">
+                        Weekend Sessions • Press Done Session For Results
                       </span>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    <div className="grid grid-cols-1 gap-1.5">
                       {wknd.sessions.map((sess) => {
                         const runtimeStatus = evaluateF1SessionRuntimeStatus(
                           sess,
@@ -382,7 +551,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                                 );
                               }
                             }}
-                            className={`px-2.5 py-2 rounded-lg border text-left transition-colors flex flex-col gap-0.5 ${
+                            className={`px-2.5 py-2 rounded-lg border text-left transition-colors flex flex-col gap-0.5 overflow-hidden ${
                               isSelectedSess
                                 ? 'bg-emerald-500/15 border-emerald-400 text-[#F8FAFC]'
                                 : isDone
@@ -392,19 +561,21 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                                 : 'bg-[#0A0A0C]/60 border-[#1E2028] text-[#8E95A5] opacity-80 cursor-default'
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-xs font-bold">{sess.name}</span>
+                            <div className="flex items-center justify-between gap-2 overflow-hidden">
+                              <span className="text-xs font-bold truncate min-w-0 flex-1">
+                                {sess.name}
+                              </span>
                               {isDone ? (
-                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-extrabold uppercase">
-                                  {isSelectedSess ? 'HIDE RESULTS ▲' : 'DONE • VIEW RESULTS ▼'}
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-extrabold uppercase whitespace-nowrap shrink-0">
+                                  {isSelectedSess ? 'HIDE ▲' : 'DONE • RESULTS ▼'}
                                 </span>
                               ) : isLive ? (
-                                <span className="px-1.5 py-0.5 rounded bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase animate-pulse">
+                                <span className="px-1.5 py-0.5 rounded bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase animate-pulse whitespace-nowrap shrink-0">
                                   LIVE
                                 </span>
                               ) : (
-                                <span className="text-[10px] text-[#8E95A5] tabular-nums">
-                                  {sess.istDateLabel} • {sess.istTimeLabel}
+                                <span className="text-[10px] text-[#8E95A5] tabular-nums whitespace-nowrap shrink-0">
+                                  {sess.istDateLabel} • {formatSimpleCardTime(sess.startTimeISO)}
                                 </span>
                               )}
                             </div>
@@ -427,17 +598,19 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                         data-testid={`live-banner-results-${selectedDoneSess.id}`}
                         className="mt-2 rounded-xl border border-[#1E2028] bg-[#0A0A0C]/95 overflow-hidden"
                       >
-                        <div className="px-3 py-2 bg-[#181A20] border-b border-[#1E2028] flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-extrabold uppercase">
-                              {selectedDoneSess.name} • FINAL RESULTS
+                        <div className="px-3 py-2 bg-[#181A20] border-b border-[#1E2028] flex items-center justify-between gap-2 overflow-hidden">
+                          <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-extrabold uppercase whitespace-nowrap shrink-0">
+                              {selectedDoneSess.name} • FINAL
                             </span>
-                            <span className="text-xs font-bold text-[#F8FAFC] truncate">
+                            <span className="text-xs font-bold text-[#F8FAFC] truncate min-w-0">
                               {selectedDoneSess.fastestOrWinnerSummary}
                             </span>
                           </div>
-                          <span className="text-[10px] text-[#8E95A5] shrink-0">
-                            Top 10 Classification
+                          <span className="text-[10px] text-[#8E95A5] shrink-0 whitespace-nowrap">
+                            {selectedDoneSess.sessionResults.length >= 20
+                              ? `Full Grid (${selectedDoneSess.sessionResults.length})`
+                              : `Top ${selectedDoneSess.sessionResults.length}`}
                           </span>
                         </div>
                         <div className="divide-y divide-[#1E2028]/70">
@@ -660,18 +833,39 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
           className="px-4 space-y-2.5"
           aria-label="Verified Completed Football Match Telemetry"
         >
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <h2 className="text-xs font-semibold uppercase tracking-wider text-[#8E95A5]">
               Recent Football Match Center (FINAL)
             </h2>
-            <span className="text-[11px] text-[#8E95A5]">
-              Tap player for stats
-            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setFootballFeedFilter('FOLLOWED')}
+                className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors ${
+                  footballFeedFilter === 'FOLLOWED'
+                    ? 'bg-emerald-500/20 border border-emerald-400/50 text-emerald-300'
+                    : 'bg-[#121316] border border-[#1E2028] text-[#8E95A5] hover:text-[#F8FAFC]'
+                }`}
+              >
+                My Favorites
+              </button>
+              <button
+                type="button"
+                onClick={() => setFootballFeedFilter('ALL')}
+                className={`px-2 py-0.5 rounded text-[10px] font-bold transition-colors ${
+                  footballFeedFilter === 'ALL'
+                    ? 'bg-[#F8FAFC] text-[#0A0A0C]'
+                    : 'bg-[#121316] border border-[#1E2028] text-[#8E95A5] hover:text-[#F8FAFC]'
+                }`}
+              >
+                All Recent
+              </button>
+            </div>
           </div>
 
           {/* Match Selector Badges */}
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
-            {LIVE_FOOTBALL_FEEDS.map((feed) => {
+            {displayedFootballFeeds.map((feed) => {
               const isSelected = feed.id === activeFootball.id;
               return (
                 <button
@@ -1007,7 +1201,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
             })}
             {/* Also allow touching the active Brazilian GP weekend or recent completed 2026 rounds to inspect all session results */}
             {[
-              ...upcomingF1Weekends.filter((w) =>
+              ...enrichedF1Weekends.filter((w) =>
                 w.sessions.some(
                   (s) =>
                     evaluateF1SessionRuntimeStatus(s) === 'COMPLETED' ||

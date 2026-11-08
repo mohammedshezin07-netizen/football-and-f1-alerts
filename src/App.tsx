@@ -89,9 +89,9 @@ const STORAGE_KEYS = {
   PLAYER_STATS_CACHE: 'apex_pitch_verified_v5_player_stats',
   DRIVER_STATS_CACHE: 'apex_pitch_verified_v5_driver_stats',
   LAST_SYNC_IST: 'apex_pitch_verified_v5_last_sync_ist',
-  MATCHES_DATA: 'apex_pitch_verified_v5_matches_data_v2',
+  MATCHES_DATA: 'apex_pitch_verified_v5_matches_data_v3',
   FOOTBALL_STANDINGS_DATA: 'apex_pitch_verified_v5_football_standings',
-  F1_WEEKENDS_DATA: 'apex_pitch_verified_v5_f1_weekends_data',
+  F1_WEEKENDS_DATA: 'apex_pitch_verified_v5_f1_weekends_data_v3',
   CLASH_SETTINGS: 'apex_pitch_verified_v5_clash_settings',
 };
 
@@ -1040,6 +1040,7 @@ export default function App() {
               onCacheDriverStats={handleCacheDriverStats}
               upcomingMatches={matches}
               upcomingF1Weekends={f1Weekends}
+              followedTeamCodes={followedTeamCodes}
             />
           )}
 
@@ -1057,7 +1058,13 @@ export default function App() {
           )}
 
           {activeTab === 'ARCHIVE' && (
-            <ArchiveTab items={ARCHIVE_ITEMS} spoilerFree={spoilerFree} />
+            <ArchiveTab
+              items={ARCHIVE_ITEMS}
+              spoilerFree={spoilerFree}
+              matches={matches}
+              f1Weekends={f1Weekends}
+              followedTeamCodes={followedTeamCodes}
+            />
           )}
 
           {activeTab === 'TEAMS_ALERTS' && (

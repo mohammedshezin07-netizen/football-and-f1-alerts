@@ -1411,6 +1411,37 @@ export function sanitizeAndDeduplicateFixtures(
         ? 'LIVE'
         : 'UPCOMING';
 
+    // If a match transitioned from UPCOMING to LIVE/FINAL by clock and lacks scores,
+    // check verified seed fixtures so it never falls back to a false 0-0
+    const seedMatchFallback =
+      resolvedStatus !== 'UPCOMING' &&
+      (match.homeScore === undefined || match.awayScore === undefined)
+        ? UPCOMING_FOOTBALL_MATCHES.find(
+            (sm) =>
+              sm.id === match.id ||
+              (sm.homeTeam.code === homeVerified.canonicalCode &&
+                sm.awayTeam.code === awayVerified.canonicalCode &&
+                sm.startTimeISO.slice(0, 10) === strictUTCStartISO.slice(0, 10))
+          )
+        : undefined;
+
+    const resolvedHomeScore =
+      resolvedStatus === 'UPCOMING'
+        ? undefined
+        : match.homeScore !== undefined
+        ? match.homeScore
+        : seedMatchFallback?.homeScore;
+
+    const resolvedAwayScore =
+      resolvedStatus === 'UPCOMING'
+        ? undefined
+        : match.awayScore !== undefined
+        ? match.awayScore
+        : seedMatchFallback?.awayScore;
+
+    const resolvedScorersSummary =
+      match.scorersSummary || seedMatchFallback?.scorersSummary;
+
     // Run middleware logical-window & 2026 sanity-calendar validation with static fallback
     const middlewareChecked = enforceFootballMatchMiddlewareValidation(
       {
@@ -1418,9 +1449,10 @@ export function sanitizeAndDeduplicateFixtures(
         startTimeISO: strictUTCStartISO,
         isTimeTBD: isTBD,
         liveStatus: resolvedStatus,
-        liveMinute: resolvedStatus === 'LIVE' ? match.liveMinute : undefined,
-        homeScore: resolvedStatus === 'UPCOMING' ? undefined : match.homeScore,
-        awayScore: resolvedStatus === 'UPCOMING' ? undefined : match.awayScore,
+        liveMinute: resolvedStatus === 'LIVE' ? match.liveMinute || 'LIVE' : undefined,
+        homeScore: resolvedHomeScore,
+        awayScore: resolvedAwayScore,
+        scorersSummary: resolvedScorersSummary,
         istTimeLabel: isTBD ? 'TBD' : istFormatted.time12hIST,
         istDateLabel: isTBD && match.istDateLabel ? match.istDateLabel : istFormatted.dateLabelIST,
         stadiumLocalTimeLabel: isTBD
@@ -1479,15 +1511,28 @@ export function sanitizeAndVerifyF1Weekends(
       : F1_WEEKENDS;
 
   return source.map((weekend) => {
-    const sanitizedSessions: F1Session[] = weekend.sessions.map((session) => {
+    const seedWeekend = F1_WEEKENDS.find(
+      (sw) =>
+        sw.id === weekend.id ||
+        sw.round === weekend.round ||
+        sw.circuitSvgId === weekend.circuitSvgId
+    );
+
+    const sanitizedSessions: F1Session[] = weekend.sessions.map((session, sIdx) => {
+      const seedSession =
+        seedWeekend?.sessions.find(
+          (ss) => ss.id === session.id || ss.name === session.name
+        ) || seedWeekend?.sessions[sIdx];
+
       const strictUTCISO = normalizeToStrictUTCISO(session.startTimeISO);
       const ist = convertUTCToISTWithIntl(strictUTCISO);
       const startMs = new Date(strictUTCISO).getTime();
       const durationMs = Math.max(30, session.durationMinutes || 60) * 60 * 1000;
       const endMs = startMs + durationMs;
 
-      let resolvedStatus: 'UPCOMING' | 'LIVE' | 'COMPLETED' = session.status || 'UPCOMING';
-      if (!Number.isNaN(startMs) && startMs > referenceNowMs) {
+      let resolvedStatus: 'UPCOMING' | 'LIVE' | 'COMPLETED' =
+        session.status || seedSession?.status || 'UPCOMING';
+      if (!Number.isNaN(startMs) && startMs > referenceNowMs && seedSession?.status !== 'COMPLETED') {
         if (session.status === 'LIVE') {
           logDataDiscrepancy({
             source: 'OPENF1',
@@ -1500,11 +1545,20 @@ export function sanitizeAndVerifyF1Weekends(
           });
         }
         resolvedStatus = 'UPCOMING';
-      } else if (!Number.isNaN(endMs) && referenceNowMs > endMs) {
+      } else if (
+        seedSession?.status === 'COMPLETED' ||
+        (!Number.isNaN(endMs) && referenceNowMs > endMs)
+      ) {
         resolvedStatus = 'COMPLETED';
       } else if (!Number.isNaN(startMs) && !Number.isNaN(endMs) && referenceNowMs >= startMs && referenceNowMs <= endMs) {
         resolvedStatus = 'LIVE';
       }
+
+      const mergedResults =
+        session.sessionResults &&
+        session.sessionResults.length >= (seedSession?.sessionResults?.length || 0)
+          ? session.sessionResults
+          : seedSession?.sessionResults || session.sessionResults;
 
       return {
         ...session,
@@ -1512,6 +1566,9 @@ export function sanitizeAndVerifyF1Weekends(
         status: resolvedStatus,
         istTimeLabel: ist.time12hIST,
         istDateLabel: ist.dateLabelIST,
+        fastestOrWinnerSummary:
+          session.fastestOrWinnerSummary || seedSession?.fastestOrWinnerSummary,
+        sessionResults: mergedResults,
       };
     });
     return enforceF1WeekendMiddlewareValidation(
@@ -1584,10 +1641,10 @@ export interface VerifiedSportsCachePayload {
   liveFootballFeeds: LiveFootballState[];
 }
 
-const CACHE_STORAGE_KEY = `${VERIFIED_CACHE_PREFIX_V5}master_cache_v2`;
+const CACHE_STORAGE_KEY = `${VERIFIED_CACHE_PREFIX_V5}master_cache_v3`;
 const IDB_NAME = 'ApexPitchOfflineDB';
 const IDB_STORE = 'verifiedSportsStore';
-const IDB_KEY = 'latestVerifiedPayloadV5_v2';
+const IDB_KEY = 'latestVerifiedPayloadV5_v3';
 
 function saveToIndexedDB(payload: VerifiedSportsCachePayload): void {
   if (typeof window === 'undefined' || !('indexedDB' in window)) return;
@@ -2891,6 +2948,189 @@ export function validateSportsStateBeforeUpdate(params: {
   };
 }
 
+interface ESPNScoreboardLeagueConfig {
+  slug: string;
+  competitionName: FootballMatch['competition'];
+  competitionLogo: string;
+  matchPrefix: string;
+}
+
+const ESPN_LIVE_SCOREBOARD_LEAGUES: ESPNScoreboardLeagueConfig[] = [
+  {
+    slug: 'eng.1',
+    competitionName: 'Premier League',
+    competitionLogo: COMPETITION_LOGOS.PL,
+    matchPrefix: 'pl',
+  },
+  {
+    slug: 'esp.1',
+    competitionName: 'La Liga',
+    competitionLogo: COMPETITION_LOGOS.LALIGA,
+    matchPrefix: 'll',
+  },
+  {
+    slug: 'ita.1',
+    competitionName: 'Serie A',
+    competitionLogo: COMPETITION_LOGOS.SERIEA,
+    matchPrefix: 'sa',
+  },
+  {
+    slug: 'ger.1',
+    competitionName: 'Bundesliga',
+    competitionLogo: COMPETITION_LOGOS.BUNDESLIGA,
+    matchPrefix: 'bun',
+  },
+  {
+    slug: 'fra.1',
+    competitionName: 'Ligue 1',
+    competitionLogo: COMPETITION_LOGOS.LIGUE1,
+    matchPrefix: 'l1',
+  },
+  {
+    slug: 'uefa.champions',
+    competitionName: 'UEFA Champions League',
+    competitionLogo: COMPETITION_LOGOS.UCL,
+    matchPrefix: 'ucl',
+  },
+  {
+    slug: 'ind.1',
+    competitionName: 'Indian Super League',
+    competitionLogo: COMPETITION_LOGOS.ISL,
+    matchPrefix: 'isl',
+  },
+];
+
+async function fetchESPNLeagueScoreboard(
+  league: ESPNScoreboardLeagueConfig,
+  forceRefresh?: boolean
+): Promise<FootballMatch[]> {
+  try {
+    const raw = await fetchWithResilience<unknown>(
+      `https://site.api.espn.com/apis/site/v2/sports/soccer/${league.slug}/scoreboard`,
+      {
+        ttlMs: CACHE_TTL_MS.LIVE_STATE,
+        cacheKey: `${VERIFIED_CACHE_PREFIX_V5}espn_scoreboard_${league.slug}_v3`,
+        forceRefresh,
+        timeoutMs: 4500,
+      }
+    );
+    const validated = validateESPNScoreboardSchema(raw);
+    if (!validated.valid || validated.events.length === 0) return [];
+
+    const parsedMatches: FootballMatch[] = [];
+    for (const ev of validated.events) {
+      const comp = ev.competitions?.[0];
+      const homeComp =
+        comp?.competitors?.find((c) => c.homeAway === 'home') ||
+        comp?.competitors?.[0];
+      const awayComp =
+        comp?.competitors?.find((c) => c.homeAway === 'away') ||
+        comp?.competitors?.[1];
+      if (!homeComp?.team || !awayComp?.team || !ev.date) continue;
+
+      const rawHomeAbbr = (homeComp.team.abbreviation || '').trim().toUpperCase();
+      const rawAwayAbbr = (awayComp.team.abbreviation || '').trim().toUpperCase();
+      const homeCode =
+        rawHomeAbbr === 'CFC' && league.slug === 'ind.1'
+          ? 'CFC_ISL'
+          : ESPN_ABBR_TO_CANONICAL_CODE[rawHomeAbbr] || rawHomeAbbr;
+      const awayCode =
+        rawAwayAbbr === 'CFC' && league.slug === 'ind.1'
+          ? 'CFC_ISL'
+          : ESPN_ABBR_TO_CANONICAL_CODE[rawAwayAbbr] || rawAwayAbbr;
+
+      const homeVerified = verifyTeamIdAgainstMapping({
+        teamCode: homeCode,
+        espnTeamId: homeComp.team.id,
+        teamName: homeComp.team.displayName,
+        source: 'ESPN',
+        contextEntityId: ev.id,
+      });
+      const awayVerified = verifyTeamIdAgainstMapping({
+        teamCode: awayCode,
+        espnTeamId: awayComp.team.id,
+        teamName: awayComp.team.displayName,
+        source: 'ESPN',
+        contextEntityId: ev.id,
+      });
+
+      const strictUTC = normalizeToStrictUTCISO(ev.date);
+      const ist = convertUTCToISTWithIntl(strictUTC);
+      const stateRaw = (ev.status?.type?.state || 'pre').toLowerCase();
+      const isCompleted = Boolean(ev.status?.type?.completed) || stateRaw === 'post';
+      const isLiveInProgress = stateRaw === 'in';
+      const liveStatus: 'UPCOMING' | 'LIVE' | 'FINAL' = isCompleted
+        ? 'FINAL'
+        : isLiveInProgress
+        ? 'LIVE'
+        : 'UPCOMING';
+
+      const liveMinuteLabel = isLiveInProgress
+        ? ev.status?.type?.shortDetail || ev.status?.displayClock || 'LIVE'
+        : undefined;
+
+      const parsedHomeScore =
+        homeComp.score !== undefined && homeComp.score !== ''
+          ? Number.parseInt(String(homeComp.score), 10)
+          : undefined;
+      const parsedAwayScore =
+        awayComp.score !== undefined && awayComp.score !== ''
+          ? Number.parseInt(String(awayComp.score), 10)
+          : undefined;
+
+      parsedMatches.push({
+        id: `match-${league.matchPrefix}-${homeVerified.canonicalCode.toLowerCase()}-${awayVerified.canonicalCode.toLowerCase()}-${strictUTC.slice(5, 10)}`,
+        sport: 'FOOTBALL',
+        competition: league.competitionName,
+        competitionLogo: league.competitionLogo,
+        matchweek: `${league.competitionName} • Verified ESPN Live`,
+        timeWindow: isCompleted ? 'PAST_RESULTS' : classifyTimeWindow(strictUTC),
+        homeTeam: {
+          id: `team-${homeVerified.canonicalCode.toLowerCase()}`,
+          name: homeVerified.canonicalName,
+          code: homeVerified.canonicalCode,
+          logo: homeComp.team.logo || homeVerified.logoUrl,
+          form: ['W', 'D', 'W', 'L', 'W'],
+        },
+        awayTeam: {
+          id: `team-${awayVerified.canonicalCode.toLowerCase()}`,
+          name: awayVerified.canonicalName,
+          code: awayVerified.canonicalCode,
+          logo: awayComp.team.logo || awayVerified.logoUrl,
+          form: ['D', 'W', 'L', 'W', 'D'],
+        },
+        startTimeISO: strictUTC,
+        istDateLabel: ist.dateLabelIST,
+        istTimeLabel: ist.time12hIST,
+        stadiumLocalTimeLabel: ist.time12hIST,
+        venue: comp?.venue?.fullName || `${league.competitionName} Stadium`,
+        city: comp?.venue?.address?.city || '',
+        durationMinutes: 115,
+        liveStatus,
+        liveMinute: liveMinuteLabel,
+        homeScore:
+          liveStatus !== 'UPCOMING' && !Number.isNaN(parsedHomeScore ?? Number.NaN)
+            ? parsedHomeScore
+            : undefined,
+        awayScore:
+          liveStatus !== 'UPCOMING' && !Number.isNaN(parsedAwayScore ?? Number.NaN)
+            ? parsedAwayScore
+            : undefined,
+        prefetchMeta: {
+          referee: 'Official Match Referee',
+          weather: '16°C • Matchday Broadcast Conditions',
+          winProbability: { home: 42, draw: 28, away: 30 },
+          headToHeadSummary: `Official ${league.competitionName} fixture synced from ESPN Live Scoreboard (${homeVerified.canonicalName} vs ${awayVerified.canonicalName}).`,
+          keyPlayersToWatch: [homeVerified.canonicalName, awayVerified.canonicalName],
+        },
+      });
+    }
+    return parsedMatches;
+  } catch {
+    return [];
+  }
+}
+
 async function fetchVerifiedFootballData(forceRefresh?: boolean): Promise<{
   footballMatches: FootballMatch[];
   santosFixtures: FootballMatch[];
@@ -2899,127 +3139,19 @@ async function fetchVerifiedFootballData(forceRefresh?: boolean): Promise<{
   espnEventsVerifiedCount: number;
   santosSource: SantosFCVerifiedApiResult['source'];
 }> {
-  const santosData = await fetchSantosFCFixturesAndStandings({ forceRefresh });
-  let liveScoreboardMatches: FootballMatch[] = [];
+  const [santosData, ...leagueScoreboards] = await Promise.all([
+    fetchSantosFCFixturesAndStandings({ forceRefresh }),
+    ...ESPN_LIVE_SCOREBOARD_LEAGUES.map((league) =>
+      fetchESPNLeagueScoreboard(league, forceRefresh)
+    ),
+  ]);
 
-  try {
-    const islScoreboardRaw = await fetchWithResilience<unknown>(
-      'https://site.api.espn.com/apis/site/v2/sports/soccer/ind.1/scoreboard',
-      {
-        ttlMs: CACHE_TTL_MS.LIVE_STATE,
-        cacheKey: `${VERIFIED_CACHE_PREFIX_V5}espn_scoreboard_ind.1`,
-        forceRefresh,
-        timeoutMs: 4500,
-      }
-    );
-    const validatedISL = validateESPNScoreboardSchema(islScoreboardRaw);
-    if (validatedISL.valid && validatedISL.events.length > 0) {
-      for (const ev of validatedISL.events) {
-        const comp = ev.competitions?.[0];
-        const homeComp =
-          comp?.competitors?.find((c) => c.homeAway === 'home') ||
-          comp?.competitors?.[0];
-        const awayComp =
-          comp?.competitors?.find((c) => c.homeAway === 'away') ||
-          comp?.competitors?.[1];
-        if (!homeComp?.team || !awayComp?.team || !ev.date) continue;
-
-        const rawHomeAbbr = (homeComp.team.abbreviation || '').trim().toUpperCase();
-        const rawAwayAbbr = (awayComp.team.abbreviation || '').trim().toUpperCase();
-        const homeCode =
-          rawHomeAbbr === 'CFC'
-            ? 'CFC_ISL'
-            : ESPN_ABBR_TO_CANONICAL_CODE[rawHomeAbbr] || rawHomeAbbr;
-        const awayCode =
-          rawAwayAbbr === 'CFC'
-            ? 'CFC_ISL'
-            : ESPN_ABBR_TO_CANONICAL_CODE[rawAwayAbbr] || rawAwayAbbr;
-
-        const homeVerified = verifyTeamIdAgainstMapping({
-          teamCode: homeCode,
-          espnTeamId: homeComp.team.id,
-          teamName: homeComp.team.displayName,
-          source: 'ESPN',
-          contextEntityId: ev.id,
-        });
-        const awayVerified = verifyTeamIdAgainstMapping({
-          teamCode: awayCode,
-          espnTeamId: awayComp.team.id,
-          teamName: awayComp.team.displayName,
-          source: 'ESPN',
-          contextEntityId: ev.id,
-        });
-
-        const strictUTC = normalizeToStrictUTCISO(ev.date);
-        const ist = convertUTCToISTWithIntl(strictUTC);
-        const stateRaw = ev.status?.type?.state || 'pre';
-        const isCompleted = Boolean(ev.status?.type?.completed) || stateRaw === 'post';
-        const liveStatus: 'UPCOMING' | 'LIVE' | 'FINAL' = isCompleted
-          ? 'FINAL'
-          : stateRaw === 'in'
-          ? 'LIVE'
-          : 'UPCOMING';
-
-        const parsedHomeScore =
-          homeComp.score !== undefined ? Number.parseInt(homeComp.score, 10) : undefined;
-        const parsedAwayScore =
-          awayComp.score !== undefined ? Number.parseInt(awayComp.score, 10) : undefined;
-
-        liveScoreboardMatches.push({
-          id: `match-isl-${homeVerified.canonicalCode.toLowerCase()}-${awayVerified.canonicalCode.toLowerCase()}-${strictUTC.slice(5, 10)}`,
-          sport: 'FOOTBALL',
-          competition: 'Indian Super League',
-          competitionLogo: COMPETITION_LOGOS.ISL,
-          matchweek: 'Indian Super League • Verified ESPN Live',
-          timeWindow: isCompleted ? 'PAST_RESULTS' : classifyTimeWindow(strictUTC),
-          homeTeam: {
-            id: `team-${homeVerified.canonicalCode.toLowerCase()}`,
-            name: homeVerified.canonicalName,
-            code: homeVerified.canonicalCode,
-            logo: homeComp.team.logo || homeVerified.logoUrl,
-            form: ['W', 'D', 'W', 'L', 'W'],
-          },
-          awayTeam: {
-            id: `team-${awayVerified.canonicalCode.toLowerCase()}`,
-            name: awayVerified.canonicalName,
-            code: awayVerified.canonicalCode,
-            logo: awayComp.team.logo || awayVerified.logoUrl,
-            form: ['D', 'W', 'L', 'W', 'D'],
-          },
-          startTimeISO: strictUTC,
-          istDateLabel: ist.dateLabelIST,
-          istTimeLabel: ist.time12hIST,
-          stadiumLocalTimeLabel: ist.time12hIST,
-          venue: comp?.venue?.fullName || 'ISL Official Venue',
-          city: comp?.venue?.address?.city || 'India',
-          durationMinutes: 115,
-          liveStatus,
-          homeScore:
-            liveStatus !== 'UPCOMING' && !Number.isNaN(parsedHomeScore ?? Number.NaN)
-              ? parsedHomeScore
-              : undefined,
-          awayScore:
-            liveStatus !== 'UPCOMING' && !Number.isNaN(parsedAwayScore ?? Number.NaN)
-              ? parsedAwayScore
-              : undefined,
-          prefetchMeta: {
-            referee: 'AIFF / ISL Match Official',
-            weather: '27°C • Floodlit ISL Matchday',
-            winProbability: { home: 42, draw: 28, away: 30 },
-            headToHeadSummary: `Official Indian Super League fixture synced from ESPN Scoreboard (${homeVerified.canonicalName} vs ${awayVerified.canonicalName}).`,
-            keyPlayersToWatch: [homeVerified.canonicalName, awayVerified.canonicalName],
-          },
-        });
-      }
-    }
-  } catch {
-    // Fallback to verified seed fixtures
-  }
+  const liveScoreboardMatches: FootballMatch[] = leagueScoreboards.flat();
 
   const nonSantosMatches = UPCOMING_FOOTBALL_MATCHES.filter(
     (m) => m.homeTeam.code !== 'SAN' && m.awayTeam.code !== 'SAN'
   );
-  // Put liveScoreboardMatches first so any live score/status overrides static seed on the same canonical date
+  // Put liveScoreboardMatches first so any live/completed score from ESPN overrides static seed on the same canonical date
   const mergedMatches = sanitizeAndDeduplicateFixtures([
     ...liveScoreboardMatches,
     ...nonSantosMatches,
@@ -3056,9 +3188,24 @@ export async function syncAndVerifyLiveSportsData(options?: {
     return cached;
   }
 
+  // Prevent stale pre-match cache from freezing a match after kickoff:
+  // If any cached UPCOMING match has now passed its startTimeISO, or lacks scores after kickoff, invalidate cache immediately
+  const nowMsCheck = Date.now();
+  const hasTransitionedMatchInCache = Boolean(
+    cached?.footballMatches?.some((m) => {
+      const kickoffMs = Date.parse(m.startTimeISO);
+      if (Number.isNaN(kickoffMs)) return false;
+      return (
+        kickoffMs <= nowMsCheck &&
+        (m.liveStatus === 'UPCOMING' || m.homeScore === undefined || m.awayScore === undefined)
+      );
+    })
+  );
+
   if (
     !forceRefresh &&
     cached &&
+    !hasTransitionedMatchInCache &&
     !isCacheEntryExpired(cached.verifiedAtISO, CACHE_TTL_MS.LIVE_STATE) &&
     cached.footballLeagueTables.some((t) => t.rows.length > 0)
   ) {
