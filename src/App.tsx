@@ -91,7 +91,7 @@ const STORAGE_KEYS = {
   LAST_SYNC_IST: 'apex_pitch_verified_v5_last_sync_ist',
   MATCHES_DATA: 'apex_pitch_verified_v5_matches_data_v3',
   FOOTBALL_STANDINGS_DATA: 'apex_pitch_verified_v5_football_standings',
-  F1_WEEKENDS_DATA: 'apex_pitch_verified_v5_f1_weekends_data_v3',
+  F1_WEEKENDS_DATA: 'apex_pitch_verified_v5_f1_weekends_data_v4',
   CLASH_SETTINGS: 'apex_pitch_verified_v5_clash_settings',
 };
 

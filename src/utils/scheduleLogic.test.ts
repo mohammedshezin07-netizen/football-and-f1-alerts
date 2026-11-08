@@ -1194,3 +1194,153 @@ test('F1 Schedule & Live Center sessions include fastest driver summaries and fu
   }
 });
 
+test('Post-Qualifying Starting Grid After Penalties & Sprint Weekend Dual-Qualifying (Sprint Qualifying + Qualifying) across current and future F1 races', async () => {
+  const {
+    enrichF1WeekendWithStartingGrids,
+    F1_2026_FULL_SEASON,
+    F1_2027_FULL_SEASON,
+  } = await import('../services/f1AutoSync');
+
+  // 1. Verify Brazilian GP (Round 21) Post-Qualifying Starting Grid After Penalties
+  const rawBrazil = UPCOMING_F1_WEEKENDS.find((w) => w.id === 'f1-wknd-brazil');
+  assert.ok(rawBrazil, 'Expected Brazilian GP in UPCOMING_F1_WEEKENDS');
+  const brazil = enrichF1WeekendWithStartingGrids(rawBrazil);
+
+  assert.ok(brazil.startingGrid, 'Expected startingGrid on Brazilian GP after Qualifying');
+  assert.equal(brazil.startingGrid.length, 22, 'Expected all 22 cars in Official Race Starting Grid');
+
+  // P1: Lando Norris (Qualified P1, no penalty)
+  assert.equal(brazil.startingGrid[0].gridPos, 1);
+  assert.equal(brazil.startingGrid[0].driverCode, 'NOR');
+  assert.equal(brazil.startingGrid[0].qualifiedPos, 1);
+  assert.equal(brazil.startingGrid[0].posDelta, 0);
+
+  // Max Verstappen qualified P2 but received +5 Grid Drop (ICE) -> starts P7 (posDelta: -5)
+  const verSlot = brazil.startingGrid.find((s) => s.driverCode === 'VER');
+  assert.ok(verSlot, 'Expected VER in startingGrid');
+  assert.equal(verSlot.qualifiedPos, 2);
+  assert.equal(verSlot.gridPos, 7);
+  assert.equal(verSlot.posDelta, -5);
+  assert.ok(verSlot.penaltyReason?.includes('+5 Grid Drop'));
+
+  // Charles Leclerc (Qualified P3) promoted to P2 (+1), Oscar Piastri (Q4) promoted to P3 (+1)
+  assert.equal(brazil.startingGrid[1].driverCode, 'LEC');
+  assert.equal(brazil.startingGrid[1].qualifiedPos, 3);
+  assert.equal(brazil.startingGrid[1].gridPos, 2);
+  assert.equal(brazil.startingGrid[1].posDelta, 1);
+
+  assert.equal(brazil.startingGrid[2].driverCode, 'PIA');
+  assert.equal(brazil.startingGrid[2].qualifiedPos, 4);
+  assert.equal(brazil.startingGrid[2].gridPos, 3);
+  assert.equal(brazil.startingGrid[2].posDelta, 1);
+
+  // Carlos Sainz qualified P8 but received +5 Grid Drop (Gearbox) -> starts P13 (posDelta: -5)
+  const saiSlot = brazil.startingGrid.find((s) => s.driverCode === 'SAI');
+  assert.ok(saiSlot, 'Expected SAI in startingGrid');
+  assert.equal(saiSlot.qualifiedPos, 8);
+  assert.equal(saiSlot.gridPos, 13);
+  assert.equal(saiSlot.posDelta, -5);
+
+  // Franco Colapinto qualified P20 but has Pit Lane Start -> starts P22 (isPitLaneStart: true), promoting PER (Q21->P20) and BOT (Q22->P21)
+  const colSlot = brazil.startingGrid[21];
+  assert.equal(colSlot.driverCode, 'COL');
+  assert.equal(colSlot.qualifiedPos, 20);
+  assert.equal(colSlot.gridPos, 22);
+  assert.equal(colSlot.isPitLaneStart, true);
+
+  const perSlot = brazil.startingGrid.find((s) => s.driverCode === 'PER');
+  assert.equal(perSlot?.qualifiedPos, 21);
+  assert.equal(perSlot?.gridPos, 20);
+  assert.equal(perSlot?.posDelta, 1);
+
+  // 2. Verify Sprint Weekend Dual-Qualifying (Sprint Qualifying + Qualifying) on upcoming Qatar GP and all Sprint weekends
+  const qatarUpcoming = UPCOMING_F1_WEEKENDS.find((w) => w.id === 'f1-wknd-qatar');
+  assert.ok(qatarUpcoming, 'Expected Qatar GP in UPCOMING_F1_WEEKENDS');
+  assert.equal(qatarUpcoming.isSprintWeekend, true, 'Qatar GP must be flagged as Sprint Weekend');
+  const qatarSessionNames = qatarUpcoming.sessions.map((s) => s.name);
+  assert.deepEqual(
+    qatarSessionNames,
+    ['FP1', 'Sprint Qualifying', 'Sprint', 'Qualifying', 'Grand Prix'],
+    'Sprint weekend must contain both Sprint Qualifying and Qualifying in exact FIA order'
+  );
+
+  // Verify all Sprint weekends across 2026 and 2027 calendars have both Sprint Qualifying and Qualifying
+  const allSprintWeekends = [
+    ...F1_2026_FULL_SEASON.filter((w) => w.isSprintWeekend),
+    ...F1_2027_FULL_SEASON.filter((w) => w.isSprintWeekend),
+  ];
+  assert.ok(allSprintWeekends.length >= 7, 'Expected at least 7 Sprint weekends across 2026-2027');
+
+  for (const spWknd of allSprintWeekends) {
+    const names = spWknd.sessions.map((s) => s.name);
+    assert.ok(
+      names.includes('Sprint Qualifying') && names.includes('Qualifying'),
+      `Expected both Sprint Qualifying and Qualifying on ${spWknd.grandPrixName}, got: ${names.join(', ')}`
+    );
+    const sqSess = spWknd.sessions.find((s) => s.name === 'Sprint Qualifying');
+    const qSess = spWknd.sessions.find((s) => s.name === 'Qualifying');
+    assert.ok(sqSess && qSess);
+
+    if (spWknd.status === 'COMPLETED') {
+      assert.equal(
+        sqSess.sessionResults?.length,
+        22,
+        `Expected 22 drivers in completed Sprint Qualifying for ${spWknd.grandPrixName}`
+      );
+      assert.equal(
+        qSess.sessionResults?.length,
+        22,
+        `Expected 22 drivers in completed Qualifying for ${spWknd.grandPrixName}`
+      );
+      assert.ok(
+        sqSess.sessionResults?.[15].timeOrGap.includes('(SQ2)'),
+        'Sprint Qualifying P16 should carry (SQ2) knockout suffix'
+      );
+      assert.ok(
+        sqSess.sessionResults?.[21].timeOrGap.includes('(SQ1)'),
+        'Sprint Qualifying P22 should carry (SQ1) knockout suffix'
+      );
+      assert.equal(
+        spWknd.sprintStartingGrid?.length,
+        22,
+        `Expected 22-car sprintStartingGrid on completed Sprint weekend ${spWknd.grandPrixName}`
+      );
+      assert.equal(
+        spWknd.startingGrid?.length,
+        22,
+        `Expected 22-car startingGrid on completed Sprint weekend ${spWknd.grandPrixName}`
+      );
+    }
+  }
+
+  // 3. Verify future upcoming race turns into a 22-car Starting Grid automatically as soon as Qualifying finishes
+  const vegasWknd = UPCOMING_F1_WEEKENDS.find((w) => w.id === 'f1-wknd-vegas')!;
+  const simulatedVegasQualiDone = enrichF1WeekendWithStartingGrids({
+    ...vegasWknd,
+    gridPenalties: [
+      {
+        driverCode: 'HAM',
+        gridDropPositions: 10,
+        reason: '+10 Grid Drop (5th Energy Store - ES)',
+        appliesTo: 'RACE',
+      },
+    ],
+    sessions: vegasWknd.sessions.map((s) =>
+      s.name === 'Qualifying'
+        ? {
+            ...s,
+            status: 'COMPLETED' as const,
+            sessionResults: brazil.sessions.find((bs) => bs.name === 'Qualifying')!.sessionResults,
+          }
+        : s
+    ),
+  });
+  assert.equal(simulatedVegasQualiDone.startingGrid?.length, 22);
+  const hamVegasSlot = simulatedVegasQualiDone.startingGrid?.find((s) => s.driverCode === 'HAM');
+  assert.ok(hamVegasSlot);
+  assert.equal(hamVegasSlot.qualifiedPos, 7);
+  assert.equal(hamVegasSlot.gridPos, 17);
+  assert.equal(hamVegasSlot.posDelta, -10);
+});
+
+

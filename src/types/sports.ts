@@ -250,6 +250,35 @@ export interface F1SessionResultEntry {
   hasFastestLap?: boolean;
 }
 
+export interface F1GridPenaltyNote {
+  driverCode: string;
+  driverName?: string;
+  constructorName?: string;
+  qualifiedPos?: number;
+  gridDropPositions?: number;
+  pitLaneStart?: boolean;
+  reason: string;
+  targetSession?: 'Grand Prix' | 'Sprint';
+  appliesTo?: 'RACE' | 'SPRINT';
+}
+
+export interface F1StartingGridEntry {
+  gridPos: number;
+  qualifiedPos: number;
+  posDelta: number;
+  driverCode: string;
+  driverName: string;
+  driverNumber: number;
+  constructorName: string;
+  constructorCode: string;
+  constructorColor: string;
+  qualifyingTime: string;
+  tyreCompound: TyreCompound;
+  penaltyApplied?: string;
+  penaltyReason?: string;
+  isPitLaneStart?: boolean;
+}
+
 export interface F1Session {
   id: string;
   name: 'FP1' | 'Sprint Qualifying' | 'FP2' | 'Sprint' | 'FP3' | 'Qualifying' | 'Grand Prix';
@@ -320,6 +349,9 @@ export interface F1Weekend {
   raceDistanceKm: string;
   timeWindow: TimeWindow;
   sessions: F1Session[];
+  gridPenalties?: F1GridPenaltyNote[];
+  startingGrid?: F1StartingGridEntry[];
+  sprintStartingGrid?: F1StartingGridEntry[];
   prefetchMeta: {
     trackTempForecast: string;
     rainChance: string;

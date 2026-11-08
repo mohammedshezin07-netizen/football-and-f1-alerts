@@ -37,6 +37,7 @@ import {
 } from '../utils/scheduleLogic';
 import {
   F1_2026_FULL_SEASON,
+  enrichF1WeekendWithStartingGrids,
   getBaselineDriverCareerProfile,
 } from '../services/f1AutoSync';
 import { DriverCareerProfileModal } from './AlarmModalAndDrawers';
@@ -104,11 +105,19 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
       const seedWknd = baselinePool.find(
         (b) => b.id === wknd.id || b.round === wknd.round
       );
-      if (!seedWknd) return wknd;
-      return {
+      if (!seedWknd) return enrichF1WeekendWithStartingGrids(wknd);
+      return enrichF1WeekendWithStartingGrids({
         ...seedWknd,
         ...wknd,
-        sessions: wknd.sessions.map((sess) => {
+        isSprintWeekend: wknd.isSprintWeekend ?? seedWknd.isSprintWeekend,
+        gridPenalties:
+          wknd.gridPenalties && wknd.gridPenalties.length > 0
+            ? wknd.gridPenalties
+            : seedWknd.gridPenalties,
+        sessions: (seedWknd.isSprintWeekend && wknd.sessions.length < 5
+          ? seedWknd.sessions
+          : wknd.sessions
+        ).map((sess) => {
           const seedSess = seedWknd.sessions.find(
             (s) => s.id === sess.id || s.name === sess.name
           );
@@ -129,7 +138,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                 : seedSess.sessionResults,
           };
         }),
-      };
+      });
     });
   }, [upcomingF1Weekends]);
 
@@ -538,56 +547,168 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                         const isSelectedSess =
                           selectedDoneSess?.id === sess.id;
 
+                        const showRaceGridRow =
+                          sess.name === 'Qualifying' &&
+                          isDone &&
+                          wknd.startingGrid &&
+                          wknd.startingGrid.length > 0;
+                        const isBannerGridSelected =
+                          bannerSelectedSessionId === '__STARTING_GRID__';
+
                         return (
-                          <button
-                            key={sess.id}
-                            type="button"
-                            disabled={!isDone}
-                            data-testid={`live-banner-session-${sess.id}`}
-                            onClick={() => {
-                              if (isDone) {
-                                setBannerSelectedSessionId((prev) =>
-                                  prev === sess.id ? null : sess.id
-                                );
-                              }
-                            }}
-                            className={`px-2.5 py-2 rounded-lg border text-left transition-colors flex flex-col gap-0.5 overflow-hidden ${
-                              isSelectedSess
-                                ? 'bg-emerald-500/15 border-emerald-400 text-[#F8FAFC]'
-                                : isDone
-                                ? 'bg-[#121316]/90 border-emerald-500/35 hover:border-emerald-400 text-[#F8FAFC] cursor-pointer'
-                                : isLive
-                                ? 'bg-[#E10600]/20 border-[#E10600] text-[#F8FAFC]'
-                                : 'bg-[#0A0A0C]/60 border-[#1E2028] text-[#8E95A5] opacity-80 cursor-default'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between gap-2 overflow-hidden">
-                              <span className="text-xs font-bold truncate min-w-0 flex-1">
-                                {sess.name}
-                              </span>
-                              {isDone ? (
-                                <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-extrabold uppercase whitespace-nowrap shrink-0">
-                                  {isSelectedSess ? 'HIDE ▲' : 'DONE • RESULTS ▼'}
+                          <React.Fragment key={sess.id}>
+                            <button
+                              type="button"
+                              disabled={!isDone}
+                              data-testid={`live-banner-session-${sess.id}`}
+                              onClick={() => {
+                                if (isDone) {
+                                  setBannerSelectedSessionId((prev) =>
+                                    prev === sess.id ? null : sess.id
+                                  );
+                                }
+                              }}
+                              className={`px-2.5 py-2 rounded-lg border text-left transition-colors flex flex-col gap-0.5 overflow-hidden ${
+                                isSelectedSess
+                                  ? 'bg-emerald-500/15 border-emerald-400 text-[#F8FAFC]'
+                                  : isDone
+                                  ? 'bg-[#121316]/90 border-emerald-500/35 hover:border-emerald-400 text-[#F8FAFC] cursor-pointer'
+                                  : isLive
+                                  ? 'bg-[#E10600]/20 border-[#E10600] text-[#F8FAFC]'
+                                  : 'bg-[#0A0A0C]/60 border-[#1E2028] text-[#8E95A5] opacity-80 cursor-default'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2 overflow-hidden">
+                                <span className="text-xs font-bold truncate min-w-0 flex-1">
+                                  {sess.name}
                                 </span>
-                              ) : isLive ? (
-                                <span className="px-1.5 py-0.5 rounded bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase animate-pulse whitespace-nowrap shrink-0">
-                                  LIVE
-                                </span>
-                              ) : (
-                                <span className="text-[10px] text-[#8E95A5] tabular-nums whitespace-nowrap shrink-0">
-                                  {sess.istDateLabel} • {formatSimpleCardTime(sess.startTimeISO)}
-                                </span>
-                              )}
-                            </div>
-                            {isSelectedSess && sess.fastestOrWinnerSummary && (
-                              <div className="text-[11px] font-semibold text-emerald-300 tabular-nums truncate">
-                                ⚡ {sess.fastestOrWinnerSummary}
+                                {isDone ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-extrabold uppercase whitespace-nowrap shrink-0">
+                                    {isSelectedSess ? 'HIDE ▲' : 'DONE • RESULTS ▼'}
+                                  </span>
+                                ) : isLive ? (
+                                  <span className="px-1.5 py-0.5 rounded bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase animate-pulse whitespace-nowrap shrink-0">
+                                    LIVE
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-[#8E95A5] tabular-nums whitespace-nowrap shrink-0">
+                                    {sess.istDateLabel} • {formatSimpleCardTime(sess.startTimeISO)}
+                                  </span>
+                                )}
                               </div>
+                              {isSelectedSess && sess.fastestOrWinnerSummary && (
+                                <div className="text-[11px] font-semibold text-emerald-300 tabular-nums truncate">
+                                  ⚡ {sess.fastestOrWinnerSummary}
+                                </div>
+                              )}
+                            </button>
+
+                            {showRaceGridRow && (
+                              <button
+                                type="button"
+                                data-testid={`live-banner-starting-grid-${wknd.id}`}
+                                onClick={() =>
+                                  setBannerSelectedSessionId((prev) =>
+                                    prev === '__STARTING_GRID__'
+                                      ? null
+                                      : '__STARTING_GRID__'
+                                  )
+                                }
+                                className={`px-2.5 py-2 rounded-lg border text-left transition-colors flex items-center justify-between gap-2 overflow-hidden ${
+                                  isBannerGridSelected
+                                    ? 'bg-amber-500/20 border-amber-400 text-[#F8FAFC]'
+                                    : 'bg-amber-500/10 border-amber-500/40 hover:border-amber-400 text-amber-200 cursor-pointer'
+                                }`}
+                              >
+                                <span className="text-xs font-extrabold truncate min-w-0 flex-1">
+                                  🏁 Race Starting Grid (After Penalties)
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded bg-amber-500/25 text-amber-200 text-[9px] font-extrabold uppercase whitespace-nowrap shrink-0">
+                                  {isBannerGridSelected
+                                    ? 'HIDE ▲'
+                                    : `${
+                                        wknd.gridPenalties?.length || 0
+                                      } PENALTIES • VIEW GRID ▼`}
+                                </span>
+                              </button>
                             )}
-                          </button>
+                          </React.Fragment>
                         );
                       })}
                     </div>
+
+                  {/* Expanded Starting Grid Table for the live weekend banner */}
+                  {isBannerExpanded &&
+                    bannerSelectedSessionId === '__STARTING_GRID__' &&
+                    wknd.startingGrid &&
+                    wknd.startingGrid.length > 0 && (
+                      <div
+                        data-testid={`live-banner-starting-grid-results-${wknd.id}`}
+                        className="mt-2 rounded-xl border border-amber-500/40 bg-[#0A0A0C]/95 overflow-hidden"
+                      >
+                        <div className="px-3 py-2 bg-[#181A20] border-b border-[#1E2028] flex items-center justify-between gap-2 overflow-hidden">
+                          <span className="text-xs font-extrabold text-amber-300 truncate min-w-0">
+                            🏁 Official Race Starting Grid (After Penalties)
+                          </span>
+                          <span className="text-[10px] text-[#8E95A5] shrink-0 whitespace-nowrap">
+                            Full Grid ({wknd.startingGrid.length})
+                          </span>
+                        </div>
+                        <div className="divide-y divide-[#1E2028]/70">
+                          {wknd.startingGrid.map((slot) => (
+                            <div
+                              key={`banner-grid-${slot.driverCode}`}
+                              className="px-3 py-1.5 flex items-center justify-between gap-2 text-xs overflow-hidden"
+                            >
+                              <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+                                <span
+                                  className={`w-6 text-center font-extrabold tabular-nums text-[10px] rounded px-1 py-0.5 shrink-0 ${
+                                    slot.isPitLaneStart
+                                      ? 'bg-rose-500/20 text-rose-300'
+                                      : slot.gridPos === 1
+                                      ? 'bg-amber-400 text-[#0A0A0C]'
+                                      : 'text-[#F8FAFC]'
+                                  }`}
+                                >
+                                  {slot.isPitLaneStart ? 'PIT' : `P${slot.gridPos}`}
+                                </span>
+                                <span
+                                  className="w-1 h-3.5 rounded-full shrink-0"
+                                  style={{ backgroundColor: slot.constructorColor }}
+                                />
+                                <span className="font-bold text-[#F8FAFC] truncate">
+                                  {slot.driverName}
+                                </span>
+                                {slot.penaltyReason && (
+                                  <span className="text-[10px] text-amber-300 truncate hidden sm:inline">
+                                    • {slot.penaltyReason}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0 tabular-nums whitespace-nowrap">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                    slot.isPitLaneStart
+                                      ? 'bg-rose-500/20 text-rose-300'
+                                      : slot.posDelta < 0
+                                      ? 'bg-amber-500/20 text-amber-300'
+                                      : slot.posDelta > 0
+                                      ? 'bg-emerald-500/20 text-emerald-300'
+                                      : 'text-[#8E95A5]'
+                                  }`}
+                                >
+                                  {slot.isPitLaneStart
+                                    ? `Q${slot.qualifiedPos} → PIT`
+                                    : slot.posDelta !== 0
+                                    ? `Q${slot.qualifiedPos} → P${slot.gridPos}`
+                                    : `Q${slot.qualifiedPos}`}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
 
                   {/* Expanded Session Classification Table for the selected DONE session */}
                   {isBannerExpanded &&
@@ -1390,6 +1511,32 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                               </button>
                             );
                           })}
+
+                          {matchedF1Weekend.startingGrid &&
+                            matchedF1Weekend.startingGrid.length > 0 && (
+                              <button
+                                type="button"
+                                data-testid="f1-live-session-tab-starting-grid"
+                                onClick={() =>
+                                  setSelectedF1SessionId((prev) =>
+                                    prev === '__STARTING_GRID__'
+                                      ? null
+                                      : '__STARTING_GRID__'
+                                  )
+                                }
+                                className={`px-2.5 py-1.5 rounded-lg border text-left shrink-0 transition-colors ${
+                                  selectedF1SessionId === '__STARTING_GRID__'
+                                    ? 'bg-amber-400 border-amber-400 text-[#0A0A0C] font-bold'
+                                    : 'bg-amber-500/10 border-amber-500/40 text-amber-300 hover:border-amber-400 cursor-pointer'
+                                }`}
+                              >
+                                <div className="flex items-center gap-1.5 whitespace-nowrap">
+                                  <span className="text-[11px] font-extrabold">
+                                    🏁 Starting Grid (After Penalties)
+                                  </span>
+                                </div>
+                              </button>
+                            )}
                         </div>
                       </div>
                     )}
@@ -1397,11 +1544,23 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
 
                   {/* Timing Tower Column Headers */}
                   <div className="px-4 py-2 bg-[#0A0A0C] border-b border-[#1E2028] flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#8E95A5]">
-                    <span>POS / DRIVER</span>
+                    <span>
+                      {selectedF1SessionId === '__STARTING_GRID__'
+                        ? 'STARTING GRID POS / DRIVER (AFTER PENALTIES)'
+                        : 'POS / DRIVER'}
+                    </span>
                     <div className="flex items-center gap-4">
-                      <span>GAP / TIME</span>
                       <span>
-                        {activeCustomSession ? 'TYRE / LAPS' : 'FINAL STINT TYRE'}
+                        {selectedF1SessionId === '__STARTING_GRID__'
+                          ? 'QUALI → GRID'
+                          : 'GAP / TIME'}
+                      </span>
+                      <span>
+                        {selectedF1SessionId === '__STARTING_GRID__'
+                          ? 'QUALI TIME'
+                          : activeCustomSession
+                          ? 'TYRE / LAPS'
+                          : 'FINAL STINT TYRE'}
                       </span>
                     </div>
                   </div>
@@ -1419,6 +1578,102 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                           Avoid Spoilers Active • Tap to Reveal Classification
                         </span>
                       </button>
+                    </div>
+                  ) : selectedF1SessionId === '__STARTING_GRID__' &&
+                    matchedF1Weekend?.startingGrid &&
+                    matchedF1Weekend.startingGrid.length > 0 ? (
+                    <div
+                      data-testid="live-center-starting-grid-results"
+                      className="divide-y divide-[#1E2028]"
+                    >
+                      {matchedF1Weekend.startingGrid.map((slot) => {
+                        const careerProfile =
+                          driverCareerCache[slot.driverCode] ||
+                          getBaselineDriverCareerProfile(slot.driverCode);
+                        return (
+                          <button
+                            key={`tower-grid-${slot.driverCode}`}
+                            type="button"
+                            onClick={() =>
+                              handleSelectDriver(
+                                `drv-${slot.driverCode.toLowerCase()}`,
+                                slot.driverCode
+                              )
+                            }
+                            className={`w-full px-4 py-2.5 flex items-center justify-between gap-2 hover:bg-[#181A20] transition-colors text-left overflow-hidden ${
+                              slot.penaltyReason ? 'bg-amber-500/[0.06]' : ''
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0 flex-1 overflow-hidden">
+                              <span
+                                className={`w-7 text-center tabular-nums text-[11px] font-extrabold rounded px-1 py-0.5 shrink-0 ${
+                                  slot.isPitLaneStart
+                                    ? 'bg-rose-500/20 text-rose-300'
+                                    : slot.gridPos === 1
+                                    ? 'bg-amber-400 text-[#0A0A0C]'
+                                    : 'text-[#F8FAFC]'
+                                }`}
+                              >
+                                {slot.isPitLaneStart ? 'PIT' : `P${slot.gridPos}`}
+                              </span>
+                              <span
+                                className="w-1 h-8 rounded-full shrink-0"
+                                style={{
+                                  backgroundColor: slot.constructorColor,
+                                }}
+                              />
+                              <F1DriverAvatar
+                                src={careerProfile?.headshotUrl}
+                                name={slot.driverName}
+                                code={slot.driverCode}
+                                teamColor={slot.constructorColor}
+                                size="sm"
+                              />
+                              <div className="min-w-0 flex-1 overflow-hidden">
+                                <div className="flex items-center gap-1.5 overflow-hidden">
+                                  <span className="text-xs font-bold text-[#F8FAFC] truncate">
+                                    {slot.driverName}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-[#8E95A5] truncate">
+                                  {slot.penaltyReason ? (
+                                    <span className="text-amber-300 font-semibold">
+                                      ⚠️ {slot.penaltyReason}
+                                    </span>
+                                  ) : (
+                                    slot.constructorName
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-3 shrink-0 tabular-nums whitespace-nowrap">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  slot.isPitLaneStart
+                                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                    : slot.posDelta < 0
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                    : slot.posDelta > 0
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : 'bg-[#181A20] text-[#8E95A5]'
+                                }`}
+                              >
+                                {slot.isPitLaneStart
+                                  ? `Q${slot.qualifiedPos} → PIT`
+                                  : slot.posDelta < 0
+                                  ? `Q${slot.qualifiedPos} → P${slot.gridPos} (${slot.posDelta})`
+                                  : slot.posDelta > 0
+                                  ? `Q${slot.qualifiedPos} → P${slot.gridPos} (+${slot.posDelta})`
+                                  : `Q${slot.qualifiedPos}`}
+                              </span>
+                              <span className="text-xs font-bold text-[#F8FAFC] w-16 text-right">
+                                {slot.qualifyingTime}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : activeCustomSession &&
                     activeCustomSession.sessionResults &&

@@ -47,6 +47,7 @@ import {
   F1_2025_HIGHLIGHT_SEASON,
   F1_2026_FULL_SEASON,
   F1_2027_FULL_SEASON,
+  enrichF1WeekendWithStartingGrids,
   fetchF1SeasonCalendar,
 } from '../services/f1AutoSync';
 import { OfficialLogo } from './OfficialLogo';
@@ -259,7 +260,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
     }
   }, [followedTeamCodes, selectedTeamCode]);
 
-  // For Formula 1 calendar display, use the selected season's full calendar enriched with any synced sessions
+  // For Formula 1 calendar display, use the selected season's full calendar enriched with any synced sessions and post-penalty starting grids
   const activeF1SeasonCalendar = useMemo(() => {
     if (selectedF1Season === 2026) {
       const base2026 = seasonWeekendsMap[2026]?.length
@@ -272,7 +273,12 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
             fw.round === wknd.round ||
             fw.circuitSvgId === wknd.circuitSvgId
         );
-        if (!syncedMatch || !syncedMatch.sessions?.length) return wknd;
+        if (!syncedMatch || !syncedMatch.sessions?.length) {
+          return enrichF1WeekendWithStartingGrids(wknd);
+        }
+        const isSprint = Boolean(
+          syncedMatch.isSprintWeekend ?? wknd.isSprintWeekend
+        );
         const mergedSessions = wknd.sessions.map((baseSess, idx) => {
           const syncedSess =
             syncedMatch.sessions.find(
@@ -287,6 +293,12 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
           return {
             ...baseSess,
             ...syncedSess,
+            name:
+              isSprint && idx === 1
+                ? ('Sprint Qualifying' as const)
+                : isSprint && idx === 2
+                ? ('Sprint' as const)
+                : baseSess.name,
             status:
               baseSess.status === 'COMPLETED' || syncedSess.status === 'COMPLETED'
                 ? ('COMPLETED' as const)
@@ -296,13 +308,17 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
             sessionResults: bestResults,
           };
         });
-        return {
+        return enrichF1WeekendWithStartingGrids({
           ...wknd,
+          isSprintWeekend: isSprint,
+          gridPenalties: syncedMatch.gridPenalties || wknd.gridPenalties,
           sessions: mergedSessions,
-        };
+        });
       });
     }
-    return seasonWeekendsMap[selectedF1Season] || F1_2026_FULL_SEASON;
+    return (seasonWeekendsMap[selectedF1Season] || F1_2026_FULL_SEASON).map(
+      (wknd) => enrichF1WeekendWithStartingGrids(wknd)
+    );
   }, [selectedF1Season, seasonWeekendsMap, f1Weekends]);
 
   const filteredWeekends = useMemo(() => {
@@ -1778,7 +1794,9 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                   timeWindow === 'THIS_WEEK' ||
                   timeWindow === 'NEXT_WEEK' ||
                   isWeekendLive ||
-                  hasAnyDoneSessionWithResults;
+                  hasAnyDoneSessionWithResults ||
+                  Boolean(wknd.isSprintWeekend) ||
+                  wknd.round >= 21;
 
                 return (
                   <div
@@ -1809,52 +1827,60 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                   >
                     <div className="flex items-center justify-between gap-3">
                       {/* Left Side: ROUND #, Flag + Bold Host Name, Official FIA Title, Crisp Date Badge */}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center flex-wrap gap-2">
-                          <span className="text-[10px] uppercase tracking-wider text-[#8E95A5] font-semibold">
+                      <div className="min-w-0 flex-1 overflow-hidden">
+                        <div className="flex items-center flex-wrap gap-1.5">
+                          <span className="text-[10px] uppercase tracking-wider text-[#8E95A5] font-semibold truncate">
                             {roundLabel} • {wknd.grandPrixName}
                           </span>
+                          {wknd.isSprintWeekend && (
+                            <span
+                              data-testid={`sprint-weekend-badge-${wknd.id}`}
+                              className="px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-400/40 text-amber-300 text-[9px] font-extrabold uppercase tracking-wider whitespace-nowrap shrink-0"
+                            >
+                              SPRINT • 2 QUALI
+                            </span>
+                          )}
                           {isWeekendLive && (
                             <span
                               data-testid="f1-live-weekend-badge"
-                              className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase tracking-wider animate-pulse"
+                              className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase tracking-wider animate-pulse whitespace-nowrap shrink-0"
                             >
                               LIVE • RACE WEEKEND
                             </span>
                           )}
                           {!isWeekendLive && isHeroCard && (
-                            <span className="px-2 py-0.5 rounded-md bg-[#F8FAFC] text-[#0A0A0C] text-[10px] font-extrabold uppercase tracking-wider">
+                            <span className="px-2 py-0.5 rounded-md bg-[#F8FAFC] text-[#0A0A0C] text-[10px] font-extrabold uppercase tracking-wider whitespace-nowrap shrink-0">
                               {timeWindow === 'NEXT_WEEK'
                                 ? `NEXT RACE (R${wknd.round})`
                                 : 'NEXT'}
                             </span>
                           )}
                           {isWeekendCompleted && (
-                            <span className="text-[10px] font-bold uppercase text-emerald-400">
+                            <span className="text-[10px] font-bold uppercase text-emerald-400 whitespace-nowrap shrink-0">
                               • COMPLETED
                             </span>
                           )}
                         </div>
 
-                        <div className="flex items-center gap-2 mt-1">
+                        <div className="flex items-center gap-2 mt-1 overflow-hidden">
                           <OfficialLogo
                             src={wknd.countryFlagUrl}
                             alt={hostLabel}
                             shape="Flag"
                             size="xs"
                           />
-                          <h3 className="font-display text-lg font-bold tracking-tight text-[#F8FAFC] truncate">
+                          <h3 className="font-display text-lg font-bold tracking-tight text-[#F8FAFC] truncate min-w-0">
                             {hostLabel}
                           </h3>
                         </div>
 
-                        <p className="text-[11px] uppercase tracking-wide text-[#8E95A5] mt-0.5 line-clamp-1">
+                        <p className="text-[11px] uppercase tracking-wide text-[#8E95A5] mt-0.5 truncate">
                           {wknd.officialTitle}
                         </p>
 
                         {/* Crisp Date Badge at bottom-left */}
-                        <div className="bg-[#F8FAFC] text-[#0A0A0C] text-xs font-bold px-2.5 py-1 rounded-md mt-2.5 inline-flex items-center gap-1.5 tabular-nums">
-                          <span>{computedDatePill}</span>
+                        <div className="bg-[#F8FAFC] text-[#0A0A0C] text-xs font-bold px-2.5 py-1 rounded-md mt-2.5 inline-flex items-center gap-1.5 tabular-nums max-w-full truncate">
+                          <span className="truncate">{computedDatePill}</span>
                         </div>
                       </div>
 
@@ -1879,101 +1905,159 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                           const compactSessTime = formatSimpleCardTime(
                             sess.startTimeISO
                           );
+                          const showRaceStartingGridRow =
+                            sess.name === 'Qualifying' &&
+                            isSessDone &&
+                            Array.isArray(wknd.startingGrid) &&
+                            wknd.startingGrid.length > 0;
+                          const showSprintStartingGridRow =
+                            sess.name === 'Sprint Qualifying' &&
+                            isSessDone &&
+                            Array.isArray(wknd.sprintStartingGrid) &&
+                            wknd.sprintStartingGrid.length > 0;
 
                           return (
-                            <div
-                              key={sess.id}
-                              data-testid={`schedule-f1-session-${sess.id}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openF1WeekendModal(wknd, sess.id);
-                              }}
-                              className={`px-2.5 py-2 rounded-lg text-[11px] transition-colors overflow-hidden ${
-                                isSessLive
-                                  ? 'bg-[#E10600]/20 border border-[#E10600]/60'
-                                  : isSessDone && sess.fastestOrWinnerSummary
-                                  ? 'bg-[#181A20] border border-emerald-500/30 hover:border-emerald-400/60'
-                                  : 'bg-[#181A20] border border-[#1E2028]'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between gap-2 overflow-hidden">
-                                <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
-                                  <span
-                                    className={`font-bold uppercase truncate min-w-0 ${
-                                      isSessLive
-                                        ? 'text-[#F8FAFC]'
-                                        : sess.name === 'Grand Prix'
-                                        ? 'text-[#E10600]'
-                                        : sess.name === 'Qualifying' ||
-                                          sess.name === 'Sprint Qualifying'
-                                        ? 'text-amber-400'
-                                        : 'text-[#F8FAFC]'
-                                    }`}
-                                  >
-                                    {sess.name}
-                                  </span>
-                                  <span className="text-[#8E95A5] shrink-0">
-                                    •
-                                  </span>
-                                  <span className="text-[#8E95A5] font-medium tabular-nums whitespace-nowrap shrink-0">
-                                    {sess.istDateLabel}
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
-                                  {isSessLive && (
-                                    <span className="px-1.5 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase whitespace-nowrap shrink-0">
-                                      LIVE
+                            <React.Fragment key={sess.id}>
+                              <div
+                                data-testid={`schedule-f1-session-${sess.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openF1WeekendModal(wknd, sess.id);
+                                }}
+                                className={`px-2.5 py-2 rounded-lg text-[11px] transition-colors overflow-hidden ${
+                                  isSessLive
+                                    ? 'bg-[#E10600]/20 border border-[#E10600]/60'
+                                    : isSessDone && sess.fastestOrWinnerSummary
+                                    ? 'bg-[#181A20] border border-emerald-500/30 hover:border-emerald-400/60'
+                                    : 'bg-[#181A20] border border-[#1E2028]'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2 overflow-hidden">
+                                  <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
+                                    <span
+                                      className={`font-bold uppercase truncate min-w-0 ${
+                                        isSessLive
+                                          ? 'text-[#F8FAFC]'
+                                          : sess.name === 'Grand Prix'
+                                          ? 'text-[#E10600]'
+                                          : sess.name === 'Qualifying' ||
+                                            sess.name === 'Sprint Qualifying'
+                                          ? 'text-amber-400'
+                                          : 'text-[#F8FAFC]'
+                                      }`}
+                                    >
+                                      {sess.name}
                                     </span>
-                                  )}
-                                  {isSessDone && !isSessLive && (
-                                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 uppercase whitespace-nowrap shrink-0">
-                                      {sess.sessionResults?.length
-                                        ? 'DONE • TAP FOR GRID'
-                                        : 'DONE'}
+                                    <span className="text-[#8E95A5] shrink-0">
+                                      •
                                     </span>
-                                  )}
-                                  {!isSessDone &&
-                                    !isSessLive &&
-                                    isAlarmArmed(sess.id) && (
-                                      <span
-                                        data-testid={`armed-badge-${sess.id}`}
-                                        className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[9px] font-bold text-amber-300 flex items-center gap-0.5 whitespace-nowrap shrink-0"
-                                      >
-                                        <Bell className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                                        <span>Active / Armed</span>
+                                    <span className="text-[#8E95A5] font-medium tabular-nums whitespace-nowrap shrink-0">
+                                      {sess.istDateLabel}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+                                    {isSessLive && (
+                                      <span className="px-1.5 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase whitespace-nowrap shrink-0">
+                                        LIVE
                                       </span>
                                     )}
-                                  <span className="font-bold text-[#F8FAFC] tabular-nums whitespace-nowrap shrink-0">
-                                    {compactSessTime}
-                                  </span>
-                                  {!isSessDone && !isSessLive && (
-                                    <button
-                                      type="button"
-                                      data-testid={`card-calendar-export-${sess.id}`}
-                                      aria-label={`Export ${sess.name} to Calendar`}
-                                      title="Export Session to Calendar & Arm Alert"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        onExportSingleCalendarEvent({
-                                          id: sess.id,
-                                          parentId: wknd.id,
-                                          sport: 'F1',
-                                          title: `F1 ${wknd.grandPrixName} — ${sess.name}`,
-                                          description: `${wknd.officialTitle} (${sess.shortLabel})`,
-                                          location: `${wknd.circuitName}, ${wknd.city}`,
-                                          startTimeISO: sess.startTimeISO,
-                                          durationMinutes: sess.durationMinutes,
-                                          mode: 'ICS',
-                                        });
-                                      }}
-                                      className="h-5 w-5 rounded bg-[#121316] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors shrink-0"
-                                    >
-                                      <CalendarPlus className="w-3 h-3" />
-                                    </button>
-                                  )}
+                                    {isSessDone && !isSessLive && (
+                                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 uppercase whitespace-nowrap shrink-0">
+                                        {sess.sessionResults?.length
+                                          ? 'DONE • TAP FOR GRID'
+                                          : 'DONE'}
+                                      </span>
+                                    )}
+                                    {!isSessDone &&
+                                      !isSessLive &&
+                                      isAlarmArmed(sess.id) && (
+                                        <span
+                                          data-testid={`armed-badge-${sess.id}`}
+                                          className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[9px] font-bold text-amber-300 flex items-center gap-0.5 whitespace-nowrap shrink-0"
+                                        >
+                                          <Bell className="w-2.5 h-2.5 text-amber-400 shrink-0" />
+                                          <span>Active / Armed</span>
+                                        </span>
+                                      )}
+                                    <span className="font-bold text-[#F8FAFC] tabular-nums whitespace-nowrap shrink-0">
+                                      {compactSessTime}
+                                    </span>
+                                    {!isSessDone && !isSessLive && (
+                                      <button
+                                        type="button"
+                                        data-testid={`card-calendar-export-${sess.id}`}
+                                        aria-label={`Export ${sess.name} to Calendar`}
+                                        title="Export Session to Calendar & Arm Alert"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onExportSingleCalendarEvent({
+                                            id: sess.id,
+                                            parentId: wknd.id,
+                                            sport: 'F1',
+                                            title: `F1 ${wknd.grandPrixName} — ${sess.name}`,
+                                            description: `${wknd.officialTitle} (${sess.shortLabel})`,
+                                            location: `${wknd.circuitName}, ${wknd.city}`,
+                                            startTimeISO: sess.startTimeISO,
+                                            durationMinutes: sess.durationMinutes,
+                                            mode: 'ICS',
+                                          });
+                                        }}
+                                        className="h-5 w-5 rounded bg-[#121316] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors shrink-0"
+                                      >
+                                        <CalendarPlus className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
-                            </div>
+
+                              {/* Post-Sprint Qualifying Starting Grid Row (For Sprint Weekends) */}
+                              {showSprintStartingGridRow && (
+                                <div
+                                  data-testid={`schedule-sprint-starting-grid-trigger-${wknd.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openF1WeekendModal(
+                                      wknd,
+                                      '__SPRINT_STARTING_GRID__'
+                                    );
+                                  }}
+                                  className="px-2.5 py-2 rounded-lg text-[11px] bg-amber-500/10 border border-amber-400/35 hover:border-amber-400 transition-colors overflow-hidden cursor-pointer"
+                                >
+                                  <div className="flex items-center justify-between gap-2 overflow-hidden">
+                                    <span className="font-bold uppercase text-amber-300 truncate min-w-0 flex-1">
+                                      🏁 Sprint Starting Grid (Post-Penalties)
+                                    </span>
+                                    <span className="px-1.5 py-0.5 rounded bg-amber-400/20 border border-amber-400/40 text-[9px] font-extrabold text-amber-300 uppercase whitespace-nowrap shrink-0">
+                                      TAP FOR 22-CAR GRID
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Post-Qualifying Race Starting Grid Row (After Any FIA Grid Penalties) */}
+                              {showRaceStartingGridRow && (
+                                <div
+                                  data-testid={`schedule-starting-grid-trigger-${wknd.id}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openF1WeekendModal(wknd, '__STARTING_GRID__');
+                                  }}
+                                  className="px-2.5 py-2 rounded-lg text-[11px] bg-amber-500/10 border border-amber-400/40 hover:border-amber-400 transition-colors overflow-hidden cursor-pointer"
+                                >
+                                  <div className="flex items-center justify-between gap-2 overflow-hidden">
+                                    <span className="font-bold uppercase text-amber-300 truncate min-w-0 flex-1">
+                                      🏁 Race Starting Grid (After Penalties)
+                                    </span>
+                                    <span className="px-1.5 py-0.5 rounded bg-amber-400/20 border border-amber-400/40 text-[9px] font-extrabold text-amber-300 uppercase whitespace-nowrap shrink-0">
+                                      {wknd.gridPenalties?.length
+                                        ? `${wknd.gridPenalties.length} PENALTIES • TAP FOR GRID`
+                                        : 'TAP FOR 22-CAR GRID'}
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+                            </React.Fragment>
                           );
                         })}
                       </div>
@@ -2371,13 +2455,15 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                   </div>
 
                   {/* Quick Completed Session Switcher Strip */}
-                  {selectedWeekendModal.sessions.some(
+                  {(selectedWeekendModal.sessions.some(
                     (s) =>
                       (selectedWeekendModal.status === 'COMPLETED' ||
                         evaluateF1SessionRuntimeStatus(s) === 'COMPLETED') &&
                       s.sessionResults &&
                       s.sessionResults.length > 0
-                  ) && (
+                  ) ||
+                    (selectedWeekendModal.startingGrid &&
+                      selectedWeekendModal.startingGrid.length > 0)) && (
                     <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
                       {selectedWeekendModal.sessions
                         .filter(
@@ -2411,6 +2497,28 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                             </button>
                           );
                         })}
+
+                      {selectedWeekendModal.startingGrid &&
+                        selectedWeekendModal.startingGrid.length > 0 && (
+                          <button
+                            type="button"
+                            data-testid="modal-starting-grid-pill"
+                            onClick={() =>
+                              setExpandedModalSessionId((prev) =>
+                                prev === '__STARTING_GRID__'
+                                  ? null
+                                  : '__STARTING_GRID__'
+                              )
+                            }
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap shrink-0 transition-colors flex items-center gap-1 ${
+                              expandedModalSessionId === '__STARTING_GRID__'
+                                ? 'bg-amber-400 text-[#0A0A0C]'
+                                : 'bg-amber-500/15 text-amber-300 border border-amber-500/40 hover:border-amber-400'
+                            }`}
+                          >
+                            <span>🏁 Starting Grid (After Penalties)</span>
+                          </button>
+                        )}
                     </div>
                   )}
 
@@ -2437,264 +2545,467 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                         hasSessionResults &&
                         expandedModalSessionId === session.id;
 
+                      const isMainQualiWithGrid =
+                        session.name === 'Qualifying' &&
+                        isSessionFinished &&
+                        Array.isArray(selectedWeekendModal.startingGrid) &&
+                        selectedWeekendModal.startingGrid.length > 0;
+
+                      const isSprintQualiWithGrid =
+                        session.name === 'Sprint Qualifying' &&
+                        isSessionFinished &&
+                        Array.isArray(
+                          selectedWeekendModal.sprintStartingGrid
+                        ) &&
+                        selectedWeekendModal.sprintStartingGrid.length > 0;
+
+                      const gridSectionKey = isMainQualiWithGrid
+                        ? '__STARTING_GRID__'
+                        : isSprintQualiWithGrid
+                        ? '__SPRINT_STARTING_GRID__'
+                        : null;
+                      const activeGridRows = isMainQualiWithGrid
+                        ? selectedWeekendModal.startingGrid
+                        : isSprintQualiWithGrid
+                        ? selectedWeekendModal.sprintStartingGrid
+                        : null;
+                      const isGridExpanded =
+                        gridSectionKey !== null &&
+                        expandedModalSessionId === gridSectionKey;
+                      const relevantPenalties = (
+                        selectedWeekendModal.gridPenalties || []
+                      ).filter((p) =>
+                        isSprintQualiWithGrid
+                          ? p.appliesTo === 'SPRINT'
+                          : !p.appliesTo || p.appliesTo === 'RACE'
+                      );
+
                       return (
-                        <div
-                          key={session.id}
-                          className={`${
-                            isSessionLive ? 'bg-[#E10600]/15' : ''
-                          }`}
-                        >
+                        <React.Fragment key={session.id}>
                           <div
-                            onClick={() => {
-                              if (hasSessionResults) {
-                                setExpandedModalSessionId((prev) =>
-                                  prev === session.id ? null : session.id
-                                );
-                              }
-                            }}
-                            className={`px-3.5 py-2.5 space-y-1.5 ${
-                              hasSessionResults
-                                ? 'cursor-pointer hover:bg-white/[0.03]'
-                                : ''
+                            className={`${
+                              isSessionLive ? 'bg-[#E10600]/15' : ''
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-2 overflow-hidden">
-                              <div className="min-w-0 flex-1 overflow-hidden">
-                                <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
-                                  <span
-                                    className={`text-xs font-bold truncate min-w-0 ${
-                                      session.name === 'Grand Prix'
-                                        ? 'text-[#E10600]'
-                                        : 'text-[#F8FAFC]'
-                                    }`}
-                                  >
-                                    {session.name}
-                                  </span>
-                                  <span className="text-[11px] text-[#8E95A5] whitespace-nowrap shrink-0">
-                                    • {session.istDateLabel}
-                                  </span>
-                                </div>
-                                <div className="text-xs font-semibold text-[#F8FAFC] tabular-nums mt-0.5 flex items-center gap-1 whitespace-nowrap">
-                                  <Clock className="w-3 h-3 text-[#8E95A5] shrink-0" />
-                                  <span>{simpleSessionTime}</span>
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
-                                {isSessionLive ? (
-                                  <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase animate-pulse whitespace-nowrap">
-                                    LIVE
-                                  </span>
-                                ) : isSessionFinished ? (
-                                  <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
-                                    <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase whitespace-nowrap">
-                                      DONE
-                                    </span>
-                                    {hasSessionResults && (
-                                      <button
-                                        type="button"
-                                        data-testid={`toggle-session-results-${session.id}`}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setExpandedModalSessionId((prev) =>
-                                            prev === session.id
-                                              ? null
-                                              : session.id
-                                          );
-                                        }}
-                                        className="px-2 py-0.5 rounded-md bg-[#121316] border border-[#1E2028] text-[10px] font-semibold text-[#F8FAFC] flex items-center gap-1 whitespace-nowrap"
-                                      >
-                                        <span>
-                                          {isSessionExpanded
-                                            ? 'Hide'
-                                            : 'Results'}
-                                        </span>
-                                        {isSessionExpanded ? (
-                                          <ChevronUp className="w-3 h-3 shrink-0" />
-                                        ) : (
-                                          <ChevronDown className="w-3 h-3 shrink-0" />
-                                        )}
-                                      </button>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        const wknd = selectedWeekendModal;
-                                        setSelectedWeekendModal(null);
-                                        onOpenAlarmDrawer({
-                                          id: session.id,
-                                          parentId: wknd.id,
-                                          sport: 'F1',
-                                          title: `${wknd.grandPrixName} • ${session.name}`,
-                                          subtitle: `${wknd.circuitName} • ${session.istDateLabel}`,
-                                          eventStartTimeISO:
-                                            session.startTimeISO,
-                                          istTimeLabel: simpleSessionTime,
-                                        });
-                                      }}
-                                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 ${
-                                        sessionArmed
-                                          ? 'bg-amber-400 text-[#0A0A0C] font-bold'
-                                          : 'bg-[#121316] text-[#F8FAFC] border border-[#1E2028]'
+                            <div
+                              onClick={() => {
+                                if (hasSessionResults) {
+                                  setExpandedModalSessionId((prev) =>
+                                    prev === session.id ? null : session.id
+                                  );
+                                }
+                              }}
+                              className={`px-3.5 py-2.5 space-y-1.5 ${
+                                hasSessionResults
+                                  ? 'cursor-pointer hover:bg-white/[0.03]'
+                                  : ''
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2 overflow-hidden">
+                                <div className="min-w-0 flex-1 overflow-hidden">
+                                  <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
+                                    <span
+                                      className={`text-xs font-bold truncate min-w-0 ${
+                                        session.name === 'Grand Prix'
+                                          ? 'text-[#E10600]'
+                                          : 'text-[#F8FAFC]'
                                       }`}
                                     >
-                                      <Bell className="w-3 h-3" />
-                                      <span>
-                                        {sessionArmed
-                                          ? 'Active / Armed'
-                                          : 'Remind'}
+                                      {session.name}
+                                    </span>
+                                    <span className="text-[11px] text-[#8E95A5] whitespace-nowrap shrink-0">
+                                      • {session.istDateLabel}
+                                    </span>
+                                  </div>
+                                  <div className="text-xs font-semibold text-[#F8FAFC] tabular-nums mt-0.5 flex items-center gap-1 whitespace-nowrap">
+                                    <Clock className="w-3 h-3 text-[#8E95A5] shrink-0" />
+                                    <span>{simpleSessionTime}</span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+                                  {isSessionLive ? (
+                                    <span className="px-2 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[10px] font-extrabold uppercase animate-pulse whitespace-nowrap">
+                                      LIVE
+                                    </span>
+                                  ) : isSessionFinished ? (
+                                    <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+                                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase whitespace-nowrap">
+                                        DONE
                                       </span>
-                                    </button>
-
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        onExportSingleCalendarEvent({
-                                          id: session.id,
-                                          parentId: selectedWeekendModal.id,
-                                          sport: 'F1',
-                                          title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
-                                          description:
-                                            selectedWeekendModal.officialTitle,
-                                          location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
-                                          startTimeISO: session.startTimeISO,
-                                          durationMinutes:
-                                            session.durationMinutes,
-                                          mode: 'GOOGLE_CALENDAR',
-                                        })
-                                      }
-                                      aria-label={`Add ${session.name} to Google Calendar`}
-                                      title="Add to Google Calendar & Arm Alert"
-                                      className="px-2 py-1 rounded-lg bg-[#121316] text-emerald-400 border border-[#1E2028] hover:text-[#F8FAFC] text-[10px] font-semibold flex items-center gap-1"
-                                    >
-                                      <CalendarPlus className="w-3 h-3" />
-                                      <span>GCal</span>
-                                    </button>
-
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        onExportSingleCalendarEvent({
-                                          id: session.id,
-                                          parentId: selectedWeekendModal.id,
-                                          sport: 'F1',
-                                          title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
-                                          description:
-                                            selectedWeekendModal.officialTitle,
-                                          location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
-                                          startTimeISO: session.startTimeISO,
-                                          durationMinutes:
-                                            session.durationMinutes,
-                                          mode: 'ICS',
-                                        })
-                                      }
-                                      aria-label={`Export ${session.name} to Calendar`}
-                                      title="Download Single .ICS & Arm Alert"
-                                      className="p-1.5 rounded-lg bg-[#121316] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]"
-                                    >
-                                      <CalendarPlus className="w-3.5 h-3.5" />
-                                    </button>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-
-                            {isSessionExpanded &&
-                              session.fastestOrWinnerSummary && (
-                                <div className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-[11px] font-semibold text-emerald-300 flex items-center justify-between gap-2">
-                                  <span className="truncate">
-                                    ⚡ {session.fastestOrWinnerSummary}
-                                  </span>
-                                </div>
-                              )}
-                          </div>
-
-                          {/* Expandable Top 10 Session Classification Leaderboard */}
-                          {isSessionExpanded && session.sessionResults && (
-                            <div
-                              data-testid={`modal-session-classification-${session.id}`}
-                              className="bg-[#0A0A0C] border-t border-[#1E2028] px-3 py-2.5 space-y-1.5"
-                            >
-                              <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#8E95A5] px-1">
-                                <span>
-                                  POS / DRIVER ({session.name} •{' '}
-                                  {session.sessionResults.length} DRIVERS)
-                                </span>
-                                <div className="flex items-center gap-3">
-                                  <span>TIME / GAP</span>
-                                  <span>TYRE / LAPS</span>
-                                </div>
-                              </div>
-                              <div className="divide-y divide-[#1E2028]/80 rounded-lg border border-[#1E2028] bg-[#121316] overflow-hidden">
-                                {session.sessionResults.map((entry) => (
-                                  <div
-                                    key={`${session.id}-${entry.driverCode}`}
-                                    className="px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs"
-                                  >
-                                    <div className="flex items-center gap-2 min-w-0">
-                                      <span
-                                        className={`w-4 tabular-nums font-bold text-[11px] shrink-0 ${
-                                          entry.pos === 1
-                                            ? 'text-emerald-400'
-                                            : 'text-[#8E95A5]'
+                                      {hasSessionResults && (
+                                        <button
+                                          type="button"
+                                          data-testid={`toggle-session-results-${session.id}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setExpandedModalSessionId((prev) =>
+                                              prev === session.id
+                                                ? null
+                                                : session.id
+                                            );
+                                          }}
+                                          className="px-2 py-0.5 rounded-md bg-[#121316] border border-[#1E2028] text-[10px] font-semibold text-[#F8FAFC] flex items-center gap-1 whitespace-nowrap"
+                                        >
+                                          <span>
+                                            {isSessionExpanded
+                                              ? 'Hide'
+                                              : 'Results'}
+                                          </span>
+                                          {isSessionExpanded ? (
+                                            <ChevronUp className="w-3 h-3 shrink-0" />
+                                          ) : (
+                                            <ChevronDown className="w-3 h-3 shrink-0" />
+                                          )}
+                                        </button>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          const wknd = selectedWeekendModal;
+                                          setSelectedWeekendModal(null);
+                                          onOpenAlarmDrawer({
+                                            id: session.id,
+                                            parentId: wknd.id,
+                                            sport: 'F1',
+                                            title: `${wknd.grandPrixName} • ${session.name}`,
+                                            subtitle: `${wknd.circuitName} • ${session.istDateLabel}`,
+                                            eventStartTimeISO:
+                                              session.startTimeISO,
+                                            istTimeLabel: simpleSessionTime,
+                                          });
+                                        }}
+                                        className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 ${
+                                          sessionArmed
+                                            ? 'bg-amber-400 text-[#0A0A0C] font-bold'
+                                            : 'bg-[#121316] text-[#F8FAFC] border border-[#1E2028]'
                                         }`}
                                       >
-                                        {entry.pos}
-                                      </span>
-                                      <span
-                                        className="w-1 h-5 rounded-full shrink-0"
-                                        style={{
-                                          backgroundColor:
-                                            entry.constructorColor,
-                                        }}
-                                      />
-                                      <div className="min-w-0">
-                                        <div className="font-bold text-[#F8FAFC] truncate flex items-center gap-1">
-                                          <span>{entry.driverName}</span>
-                                          <span className="text-[10px] text-[#8E95A5] font-normal">
-                                            #{entry.driverNumber}
-                                          </span>
-                                        </div>
-                                        <div className="text-[10px] text-[#8E95A5] truncate">
-                                          {entry.constructorName}
-                                        </div>
-                                      </div>
-                                    </div>
+                                        <Bell className="w-3 h-3" />
+                                        <span>
+                                          {sessionArmed
+                                            ? 'Active / Armed'
+                                            : 'Remind'}
+                                        </span>
+                                      </button>
 
-                                    <div className="flex items-center gap-2.5 shrink-0 tabular-nums">
-                                      <div className="text-right">
-                                        <div
-                                          className={`text-[11px] font-bold ${
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          onExportSingleCalendarEvent({
+                                            id: session.id,
+                                            parentId: selectedWeekendModal.id,
+                                            sport: 'F1',
+                                            title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
+                                            description:
+                                              selectedWeekendModal.officialTitle,
+                                            location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
+                                            startTimeISO: session.startTimeISO,
+                                            durationMinutes:
+                                              session.durationMinutes,
+                                            mode: 'GOOGLE_CALENDAR',
+                                          })
+                                        }
+                                        aria-label={`Add ${session.name} to Google Calendar`}
+                                        title="Add to Google Calendar & Arm Alert"
+                                        className="px-2 py-1 rounded-lg bg-[#121316] text-emerald-400 border border-[#1E2028] hover:text-[#F8FAFC] text-[10px] font-semibold flex items-center gap-1"
+                                      >
+                                        <CalendarPlus className="w-3 h-3" />
+                                        <span>GCal</span>
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          onExportSingleCalendarEvent({
+                                            id: session.id,
+                                            parentId: selectedWeekendModal.id,
+                                            sport: 'F1',
+                                            title: `F1 ${selectedWeekendModal.grandPrixName} — ${session.name}`,
+                                            description:
+                                              selectedWeekendModal.officialTitle,
+                                            location: `${selectedWeekendModal.circuitName}, ${selectedWeekendModal.city}`,
+                                            startTimeISO: session.startTimeISO,
+                                            durationMinutes:
+                                              session.durationMinutes,
+                                            mode: 'ICS',
+                                          })
+                                        }
+                                        aria-label={`Export ${session.name} to Calendar`}
+                                        title="Download Single .ICS & Arm Alert"
+                                        className="p-1.5 rounded-lg bg-[#121316] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]"
+                                      >
+                                        <CalendarPlus className="w-3.5 h-3.5" />
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+
+                              {isSessionExpanded &&
+                                session.fastestOrWinnerSummary && (
+                                  <div className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-[11px] font-semibold text-emerald-300 flex items-center justify-between gap-2">
+                                    <span className="truncate">
+                                      ⚡ {session.fastestOrWinnerSummary}
+                                    </span>
+                                  </div>
+                                )}
+                            </div>
+
+                            {/* Expandable Top 10 / 22-Driver Session Classification Leaderboard */}
+                            {isSessionExpanded && session.sessionResults && (
+                              <div
+                                data-testid={`modal-session-classification-${session.id}`}
+                                className="bg-[#0A0A0C] border-t border-[#1E2028] px-3 py-2.5 space-y-1.5"
+                              >
+                                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#8E95A5] px-1">
+                                  <span>
+                                    POS / DRIVER ({session.name} •{' '}
+                                    {session.sessionResults.length} DRIVERS)
+                                  </span>
+                                  <div className="flex items-center gap-3">
+                                    <span>TIME / GAP</span>
+                                    <span>TYRE / LAPS</span>
+                                  </div>
+                                </div>
+                                <div className="divide-y divide-[#1E2028]/80 rounded-lg border border-[#1E2028] bg-[#121316] overflow-hidden">
+                                  {session.sessionResults.map((entry) => (
+                                    <div
+                                      key={`${session.id}-${entry.driverCode}`}
+                                      className="px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <span
+                                          className={`w-4 tabular-nums font-bold text-[11px] shrink-0 ${
                                             entry.pos === 1
                                               ? 'text-emerald-400'
-                                              : 'text-[#F8FAFC]'
+                                              : 'text-[#8E95A5]'
                                           }`}
                                         >
-                                          {entry.timeOrGap}
-                                        </div>
-                                        {entry.bestLapTime &&
-                                          entry.pos > 1 && (
-                                            <div className="text-[9px] text-[#8E95A5]">
-                                              {entry.bestLapTime}
-                                            </div>
-                                          )}
-                                      </div>
-                                      <div className="flex items-center gap-1">
-                                        <TyreCompoundBadge
-                                          compound={entry.tyreCompound}
-                                          ageLaps={entry.lapsCompleted}
+                                          {entry.pos}
+                                        </span>
+                                        <span
+                                          className="w-1 h-5 rounded-full shrink-0"
+                                          style={{
+                                            backgroundColor:
+                                              entry.constructorColor,
+                                          }}
                                         />
+                                        <div className="min-w-0">
+                                          <div className="font-bold text-[#F8FAFC] truncate flex items-center gap-1">
+                                            <span>{entry.driverName}</span>
+                                            <span className="text-[10px] text-[#8E95A5] font-normal">
+                                              #{entry.driverNumber}
+                                            </span>
+                                          </div>
+                                          <div className="text-[10px] text-[#8E95A5] truncate">
+                                            {entry.constructorName}
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-center gap-2.5 shrink-0 tabular-nums">
+                                        <div className="text-right">
+                                          <div
+                                            className={`text-[11px] font-bold ${
+                                              entry.pos === 1
+                                                ? 'text-emerald-400'
+                                                : 'text-[#F8FAFC]'
+                                            }`}
+                                          >
+                                            {entry.timeOrGap}
+                                          </div>
+                                          {entry.bestLapTime &&
+                                            entry.pos > 1 && (
+                                              <div className="text-[9px] text-[#8E95A5]">
+                                                {entry.bestLapTime}
+                                              </div>
+                                            )}
+                                        </div>
+                                        <div className="flex items-center gap-1">
+                                          <TyreCompoundBadge
+                                            compound={entry.tyreCompound}
+                                            ageLaps={entry.lapsCompleted}
+                                          />
+                                        </div>
                                       </div>
                                     </div>
-                                  </div>
-                                ))}
+                                  ))}
+                                </div>
                               </div>
+                            )}
+                          </div>
+
+                          {/* POST-QUALIFYING OFFICIAL STARTING GRID (AFTER PENALTIES) */}
+                          {gridSectionKey && activeGridRows && (
+                            <div className="bg-amber-500/[0.06] border-t border-[#1E2028]">
+                              <button
+                                type="button"
+                                data-testid={`modal-toggle-${gridSectionKey}`}
+                                onClick={() =>
+                                  setExpandedModalSessionId((prev) =>
+                                    prev === gridSectionKey
+                                      ? null
+                                      : gridSectionKey
+                                  )
+                                }
+                                className="w-full px-3.5 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-amber-500/10 transition-colors overflow-hidden"
+                              >
+                                <div className="min-w-0 flex-1 overflow-hidden">
+                                  <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
+                                    <span className="text-xs font-extrabold text-amber-300 truncate min-w-0">
+                                      🏁{' '}
+                                      {isMainQualiWithGrid
+                                        ? 'Official Race Starting Grid (After Penalties)'
+                                        : 'Official Sprint Starting Grid (After Penalties)'}
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] text-[#8E95A5] truncate mt-0.5">
+                                    {relevantPenalties.length > 0
+                                      ? `${relevantPenalties.length} FIA Steward Grid ${
+                                          relevantPenalties.length === 1
+                                            ? 'Penalty'
+                                            : 'Penalties'
+                                        } Applied • Tap to view all ${
+                                          activeGridRows.length
+                                        } starting slots`
+                                      : `No Grid Drops • All ${activeGridRows.length} drivers start in Qualifying order`}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+                                  <span className="px-2 py-0.5 rounded-md bg-amber-500/20 border border-amber-400/40 text-[10px] font-bold text-amber-300 uppercase whitespace-nowrap">
+                                    {isGridExpanded ? 'Hide ▲' : 'View Grid ▼'}
+                                  </span>
+                                </div>
+                              </button>
+
+                              {isGridExpanded && (
+                                <div
+                                  data-testid={`modal-starting-grid-table-${selectedWeekendModal.id}`}
+                                  className="bg-[#0A0A0C] border-t border-amber-500/25 px-3 py-2.5 space-y-2"
+                                >
+                                  {relevantPenalties.length > 0 && (
+                                    <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 space-y-1">
+                                      <div className="text-[10px] font-extrabold uppercase tracking-wider text-amber-300">
+                                        FIA Stewards Grid Penalties Applied:
+                                      </div>
+                                      {relevantPenalties.map((pen) => (
+                                        <div
+                                          key={pen.driverCode}
+                                          className="text-[11px] text-[#F8FAFC] flex items-center justify-between gap-2 overflow-hidden"
+                                        >
+                                          <span className="font-bold text-amber-200 shrink-0">
+                                            {pen.driverCode}:
+                                          </span>
+                                          <span className="text-[#8E95A5] truncate flex-1 min-w-0">
+                                            {pen.reason}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#8E95A5] px-1">
+                                    <span>
+                                      STARTING POS / DRIVER ({activeGridRows.length}{' '}
+                                      CARS)
+                                    </span>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <span>QUALI → GRID</span>
+                                      <span>TIME</span>
+                                    </div>
+                                  </div>
+
+                                  <div className="divide-y divide-[#1E2028]/80 rounded-lg border border-[#1E2028] bg-[#121316] overflow-hidden">
+                                    {activeGridRows.map((slot) => (
+                                      <div
+                                        key={`grid-${slot.driverCode}`}
+                                        className={`px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs overflow-hidden ${
+                                          slot.penaltyReason
+                                            ? 'bg-amber-500/[0.06]'
+                                            : ''
+                                        }`}
+                                      >
+                                        <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+                                          <span
+                                            className={`w-6 text-center tabular-nums font-extrabold text-[11px] shrink-0 rounded px-1 py-0.5 ${
+                                              slot.isPitLaneStart
+                                                ? 'bg-rose-500/20 text-rose-300'
+                                                : slot.gridPos === 1
+                                                ? 'bg-amber-400 text-[#0A0A0C]'
+                                                : slot.gridPos <= 3
+                                                ? 'bg-emerald-500/20 text-emerald-300'
+                                                : 'text-[#F8FAFC]'
+                                            }`}
+                                          >
+                                            {slot.isPitLaneStart
+                                              ? 'PIT'
+                                              : `P${slot.gridPos}`}
+                                          </span>
+                                          <span
+                                            className="w-1 h-6 rounded-full shrink-0"
+                                            style={{
+                                              backgroundColor:
+                                                slot.constructorColor,
+                                            }}
+                                          />
+                                          <div className="min-w-0 flex-1 overflow-hidden">
+                                            <div className="font-bold text-[#F8FAFC] truncate flex items-center gap-1">
+                                              <span className="truncate">
+                                                {slot.driverName}
+                                              </span>
+                                              <span className="text-[10px] text-[#8E95A5] font-normal shrink-0">
+                                                #{slot.driverNumber}
+                                              </span>
+                                            </div>
+                                            <div className="text-[10px] text-[#8E95A5] truncate">
+                                              {slot.penaltyReason ? (
+                                                <span className="text-amber-300 font-semibold">
+                                                  ⚠️ {slot.penaltyReason}
+                                                </span>
+                                              ) : (
+                                                slot.constructorName
+                                              )}
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        <div className="flex items-center gap-2 shrink-0 tabular-nums whitespace-nowrap">
+                                          <span
+                                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                              slot.isPitLaneStart
+                                                ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                                : slot.posDelta < 0
+                                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                                : slot.posDelta > 0
+                                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                                : 'bg-[#181A20] text-[#8E95A5]'
+                                            }`}
+                                          >
+                                            {slot.isPitLaneStart
+                                              ? `Q${slot.qualifiedPos} → PIT`
+                                              : slot.posDelta < 0
+                                              ? `Q${slot.qualifiedPos} → P${slot.gridPos} (${slot.posDelta})`
+                                              : slot.posDelta > 0
+                                              ? `Q${slot.qualifiedPos} → P${slot.gridPos} (+${slot.posDelta})`
+                                              : `Q${slot.qualifiedPos}`}
+                                          </span>
+                                          <span className="text-[11px] font-semibold text-[#F8FAFC] w-16 text-right">
+                                            {slot.qualifyingTime}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
-                        </div>
+                        </React.Fragment>
                       );
                     })}
                   </div>

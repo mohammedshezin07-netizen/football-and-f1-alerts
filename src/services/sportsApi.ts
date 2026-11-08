@@ -1518,10 +1518,19 @@ export function sanitizeAndVerifyF1Weekends(
         sw.circuitSvgId === weekend.circuitSvgId
     );
 
+    const isSprint = Boolean(weekend.isSprintWeekend ?? seedWeekend?.isSprintWeekend);
+
     const sanitizedSessions: F1Session[] = weekend.sessions.map((session, sIdx) => {
+      const normalizedSessionName: F1Session['name'] =
+        isSprint && sIdx === 1 && session.name === 'FP2'
+          ? 'Sprint Qualifying'
+          : isSprint && sIdx === 2 && session.name === 'FP3'
+          ? 'Sprint'
+          : session.name;
+
       const seedSession =
         seedWeekend?.sessions.find(
-          (ss) => ss.id === session.id || ss.name === session.name
+          (ss) => ss.id === session.id || ss.name === normalizedSessionName
         ) || seedWeekend?.sessions[sIdx];
 
       const strictUTCISO = normalizeToStrictUTCISO(session.startTimeISO);
@@ -1562,6 +1571,13 @@ export function sanitizeAndVerifyF1Weekends(
 
       return {
         ...session,
+        name: normalizedSessionName,
+        shortLabel:
+          normalizedSessionName === 'Sprint Qualifying'
+            ? 'SPRINT QUALIFYING (SQ1–SQ3)'
+            : normalizedSessionName === 'Sprint'
+            ? 'F1 SPRINT (100KM)'
+            : session.shortLabel,
         startTimeISO: strictUTCISO,
         status: resolvedStatus,
         istTimeLabel: ist.time12hIST,
@@ -1574,6 +1590,11 @@ export function sanitizeAndVerifyF1Weekends(
     return enforceF1WeekendMiddlewareValidation(
       {
         ...weekend,
+        isSprintWeekend: isSprint,
+        gridPenalties: weekend.gridPenalties || seedWeekend?.gridPenalties,
+        startingGrid: weekend.startingGrid || seedWeekend?.startingGrid,
+        sprintStartingGrid:
+          weekend.sprintStartingGrid || seedWeekend?.sprintStartingGrid,
         sessions: sanitizedSessions,
       },
       referenceNowMs,

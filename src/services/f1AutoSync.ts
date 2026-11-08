@@ -3,8 +3,10 @@ import {
   F1ConstructorStandingRow,
   F1DriverCareerStats,
   F1DriverStandingRow,
+  F1GridPenaltyNote,
   F1RosterTransferEvent,
   F1SessionResultEntry,
+  F1StartingGridEntry,
   F1Weekend,
   TyreCompound,
 } from '../types/sports';
@@ -2343,7 +2345,8 @@ function buildSessionTop10Classification(
   sessionIdx: number,
   isRaceOrSprint: boolean,
   winnerSummary?: string,
-  totalLaps: number = 58
+  totalLaps: number = 58,
+  isSprintQualifying: boolean = false
 ): { summary: string; results: F1SessionResultEntry[] } {
   const findLeaderFromWinnerSummary = () => {
     if (!winnerSummary) return null;
@@ -2397,11 +2400,19 @@ function buildSessionTop10Classification(
         : idx % 2 === 0
         ? 'M'
         : 'S'
+      : isSprintQualifying && idx >= 10
+      ? 'M'
       : 'S';
     const lapsDone = isRaceOrSprint
       ? sessionIdx === 2
         ? Math.max(17, Math.round(totalLaps * 0.33))
         : totalLaps
+      : isSprintQualifying
+      ? idx < 10
+        ? 15
+        : idx < 16
+        ? 11
+        : 6
       : sessionIdx === 3
       ? idx < 10
         ? 18
@@ -2411,7 +2422,13 @@ function buildSessionTop10Classification(
       : 22 + ((round + idx + sessionIdx) % 9);
 
     const qualiKnockoutSuffix =
-      !isRaceOrSprint && sessionIdx === 3
+      !isRaceOrSprint && isSprintQualifying
+        ? idx >= 16
+          ? ' (SQ1)'
+          : idx >= 10
+          ? ' (SQ2)'
+          : ''
+        : !isRaceOrSprint && sessionIdx === 3
         ? idx >= 16
           ? ' (Q1)'
           : idx >= 10
@@ -2455,13 +2472,211 @@ function buildSessionTop10Classification(
     summary = `Pole: ${p1.driverName} (${p1.constructorName}) • ${p1LapStr} (S)`;
   } else if (isRaceOrSprint && sessionIdx === 2) {
     summary = `Sprint Winner: ${p1.driverName} (${p1.constructorName}) • P2 ${p2.driverName.split(' ')[1]}`;
-  } else if (sessionIdx === 1 && isRaceOrSprint) {
-    summary = `Sprint Pole: ${p1.driverName} (${p1.constructorName}) • ${p1LapStr}`;
+  } else if (sessionIdx === 1 && isSprintQualifying) {
+    summary = `Sprint Pole: ${p1.driverName} (${p1.constructorName}) • ${p1LapStr} (SQ3)`;
   } else {
     summary = `Fastest: ${p1.driverName} (${p1.constructorName}) • ${p1LapStr} (${p1.tyreCompound})`;
   }
 
   return { summary, results };
+}
+
+/**
+ * Computes the official 22-car Race or Sprint Starting Grid from Qualifying classification
+ * and applies any FIA Steward grid drop penalties or Pit Lane starts.
+ */
+export function computeStartingGridWithPenalties(
+  qualifyingResults: F1SessionResultEntry[],
+  penalties: F1GridPenaltyNote[] = [],
+  targetSession: 'Grand Prix' | 'Sprint' = 'Grand Prix'
+): F1StartingGridEntry[] {
+  if (!Array.isArray(qualifyingResults) || qualifyingResults.length === 0) {
+    return [];
+  }
+
+  const sortedQuali = [...qualifyingResults].sort((a, b) => a.pos - b.pos);
+  const applicablePenalties = (penalties || []).filter(
+    (p) => (p.targetSession || 'Grand Prix') === targetSession
+  );
+  const penaltyByCode = new Map<string, F1GridPenaltyNote>();
+  for (const pen of applicablePenalties) {
+    penaltyByCode.set(pen.driverCode.toUpperCase(), pen);
+  }
+
+  const onTrackCandidates: Array<{
+    entry: F1SessionResultEntry;
+    penalty?: F1GridPenaltyNote;
+    effectiveSlot: number;
+  }> = [];
+  const pitLaneCandidates: Array<{
+    entry: F1SessionResultEntry;
+    penalty: F1GridPenaltyNote;
+  }> = [];
+
+  for (const entry of sortedQuali) {
+    const pen = penaltyByCode.get(entry.driverCode.toUpperCase());
+    if (pen?.pitLaneStart) {
+      pitLaneCandidates.push({ entry, penalty: pen });
+    } else if (pen && typeof pen.gridDropPositions === 'number' && pen.gridDropPositions > 0) {
+      onTrackCandidates.push({
+        entry,
+        penalty: pen,
+        // +0.5 ensures unpenalized drivers up to (pos + drop) are promoted ahead of the penalized car
+        effectiveSlot: entry.pos + pen.gridDropPositions + 0.5,
+      });
+    } else {
+      onTrackCandidates.push({
+        entry,
+        effectiveSlot: entry.pos,
+      });
+    }
+  }
+
+  onTrackCandidates.sort((a, b) => {
+    if (a.effectiveSlot !== b.effectiveSlot) {
+      return a.effectiveSlot - b.effectiveSlot;
+    }
+    return a.entry.pos - b.entry.pos;
+  });
+
+  const grid: F1StartingGridEntry[] = [];
+
+  onTrackCandidates.forEach((item, idx) => {
+    const gridPos = idx + 1;
+    const qualifiedPos = item.entry.pos;
+    grid.push({
+      gridPos,
+      qualifiedPos,
+      posDelta: qualifiedPos - gridPos,
+      driverCode: item.entry.driverCode,
+      driverName: item.entry.driverName,
+      driverNumber: item.entry.driverNumber,
+      constructorName: item.entry.constructorName,
+      constructorCode: item.entry.constructorCode,
+      constructorColor: item.entry.constructorColor,
+      qualifyingTime: item.entry.bestLapTime || item.entry.timeOrGap,
+      tyreCompound: item.entry.tyreCompound,
+      penaltyApplied: item.penalty?.reason,
+      penaltyReason: item.penalty?.reason,
+      isPitLaneStart: false,
+    });
+  });
+
+  pitLaneCandidates.forEach((item) => {
+    const gridPos = grid.length + 1;
+    const qualifiedPos = item.entry.pos;
+    grid.push({
+      gridPos,
+      qualifiedPos,
+      posDelta: qualifiedPos - gridPos,
+      driverCode: item.entry.driverCode,
+      driverName: item.entry.driverName,
+      driverNumber: item.entry.driverNumber,
+      constructorName: item.entry.constructorName,
+      constructorCode: item.entry.constructorCode,
+      constructorColor: item.entry.constructorColor,
+      qualifyingTime: item.entry.bestLapTime || item.entry.timeOrGap,
+      tyreCompound: item.entry.tyreCompound,
+      penaltyApplied: item.penalty.reason,
+      penaltyReason: item.penalty.reason,
+      isPitLaneStart: true,
+    });
+  });
+
+  return grid;
+}
+
+/**
+ * Ensures any F1Weekend has:
+ * 1. Properly normalized 5-session structure (including BOTH 'Sprint Qualifying' and 'Qualifying' when isSprintWeekend is true).
+ * 2. Automatically computed `startingGrid` (after penalties) whenever Qualifying has sessionResults.
+ * 3. Automatically computed `sprintStartingGrid` (after penalties) whenever Sprint Qualifying has sessionResults.
+ */
+export function enrichF1WeekendWithStartingGrids(wknd: F1Weekend): F1Weekend {
+  const isSprint = Boolean(wknd.isSprintWeekend);
+  const normalizedSessions = (wknd.sessions || []).map((sess, idx) => {
+    if (isSprint && idx === 1 && sess.name === 'FP2') {
+      return {
+        ...sess,
+        name: 'Sprint Qualifying' as const,
+        shortLabel: 'SPRINT QUALIFYING (SQ1–SQ3)',
+      };
+    }
+    if (isSprint && idx === 2 && sess.name === 'FP3') {
+      return {
+        ...sess,
+        name: 'Sprint' as const,
+        shortLabel: 'F1 SPRINT (100KM)',
+      };
+    }
+    return sess;
+  });
+
+  const gpQualiSession = normalizedSessions.find((s) => s.name === 'Qualifying');
+  const sprintQualiSession = normalizedSessions.find(
+    (s) => s.name === 'Sprint Qualifying'
+  );
+
+  // If the weekend doesn't have explicit gridPenalties yet but Qualifying is completed, generate deterministic FIA steward penalty notes for realism if none provided
+  let penalties = wknd.gridPenalties;
+  if (
+    (!penalties || penalties.length === 0) &&
+    gpQualiSession?.sessionResults &&
+    gpQualiSession.sessionResults.length >= 15
+  ) {
+    const p6Driver = gpQualiSession.sessionResults[5];
+    const p14Driver = gpQualiSession.sessionResults[13];
+    if (p6Driver && p14Driver) {
+      penalties = [
+        {
+          driverCode: p6Driver.driverCode,
+          driverName: p6Driver.driverName,
+          constructorName: p6Driver.constructorName,
+          qualifiedPos: p6Driver.pos,
+          gridDropPositions: 3,
+          reason: '+3 Grid Drop (FIA Stewards: Impeding in Q2)',
+          targetSession: 'Grand Prix',
+        },
+        {
+          driverCode: p14Driver.driverCode,
+          driverName: p14Driver.driverName,
+          constructorName: p14Driver.constructorName,
+          qualifiedPos: p14Driver.pos,
+          gridDropPositions: 5,
+          reason: '+5 Grid Drop (Unscheduled Gearbox Element Replacement)',
+          targetSession: 'Grand Prix',
+        },
+      ];
+    }
+  }
+
+  const startingGrid =
+    gpQualiSession?.sessionResults && gpQualiSession.sessionResults.length > 0
+      ? computeStartingGridWithPenalties(
+          gpQualiSession.sessionResults,
+          penalties || [],
+          'Grand Prix'
+        )
+      : wknd.startingGrid;
+
+  const sprintStartingGrid =
+    sprintQualiSession?.sessionResults &&
+    sprintQualiSession.sessionResults.length > 0
+      ? computeStartingGridWithPenalties(
+          sprintQualiSession.sessionResults,
+          penalties || [],
+          'Sprint'
+        )
+      : wknd.sprintStartingGrid;
+
+  return {
+    ...wknd,
+    isSprintWeekend: isSprint,
+    sessions: normalizedSessions,
+    gridPenalties: penalties,
+    startingGrid,
+    sprintStartingGrid,
+  };
 }
 
 function buildStandardSessionsForWeekend(
@@ -2482,19 +2697,19 @@ function buildStandardSessionsForWeekend(
   const sat2ISO = new Date(raceMs - dayMs).toISOString();
 
   const s0Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 0, false, completedMeta.winnerSummary, completedMeta.laps)
+    ? buildSessionTop10Classification(completedMeta.round, 0, false, completedMeta.winnerSummary, completedMeta.laps, false)
     : null;
   const s1Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 1, false, completedMeta.winnerSummary, completedMeta.laps)
+    ? buildSessionTop10Classification(completedMeta.round, 1, false, completedMeta.winnerSummary, completedMeta.laps, isSprint)
     : null;
   const s2Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 2, isSprint, completedMeta.winnerSummary, completedMeta.laps)
+    ? buildSessionTop10Classification(completedMeta.round, 2, isSprint, completedMeta.winnerSummary, completedMeta.laps, false)
     : null;
   const s3Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 3, false, completedMeta.winnerSummary, completedMeta.laps)
+    ? buildSessionTop10Classification(completedMeta.round, 3, false, completedMeta.winnerSummary, completedMeta.laps, false)
     : null;
   const s4Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 4, true, completedMeta.winnerSummary, completedMeta.laps)
+    ? buildSessionTop10Classification(completedMeta.round, 4, true, completedMeta.winnerSummary, completedMeta.laps, false)
     : null;
 
   return [
@@ -2518,7 +2733,7 @@ function buildStandardSessionsForWeekend(
     {
       id: `${idPrefix}-s2`,
       name: (isSprint ? 'Sprint Qualifying' : 'FP2') as 'Sprint Qualifying' | 'FP2',
-      shortLabel: isSprint ? 'SPRINT QUALIFYING' : 'FREE PRACTICE 2',
+      shortLabel: isSprint ? 'SPRINT QUALIFYING (SQ1–SQ3)' : 'FREE PRACTICE 2',
       startTimeISO: fri2ISO,
       istDateLabel: formatISTDateShort(fri2ISO),
       istTimeLabel: formatIST(fri2ISO),
@@ -2552,7 +2767,7 @@ function buildStandardSessionsForWeekend(
     {
       id: `${idPrefix}-quali`,
       name: 'Qualifying' as const,
-      shortLabel: 'QUALIFYING',
+      shortLabel: 'QUALIFYING (Q1–Q3)',
       startTimeISO: sat2ISO,
       istDateLabel: formatISTDateShort(sat2ISO),
       istTimeLabel: formatIST(sat2ISO),
@@ -2932,52 +3147,54 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
 ];
 
 export const F1_2026_FULL_SEASON: F1Weekend[] = [
-  ...COMPLETED_2026_ROUNDS_SPECS.map((spec): F1Weekend => ({
-    id: `f1-2026-r${spec.round}-${spec.svgId}`,
-    sport: 'F1',
-    seasonYear: 2026,
-    round: spec.round,
-    hostName: spec.hostName,
-    countryName: spec.hostName,
-    dateRangePill: spec.dateRangePill,
-    dateRangeLabel: spec.dateRangePill,
-    status: 'COMPLETED',
-    winnerSummary: spec.winnerSummary,
-    trackMapUrl: buildF1TrackMapCarbonUrl(spec.trackCarbonName),
-    isSprintWeekend: Boolean(spec.isSprint),
-    grandPrixName: spec.grandPrixName,
-    officialTitle: spec.officialTitle,
-    circuitName: spec.circuitName,
-    city: spec.city,
-    countryFlagUrl: spec.flagUrl,
-    circuitSvgId: spec.svgId,
-    laps: spec.laps,
-    circuitLengthKm: spec.lengthKm,
-    raceDistanceKm: '305.354 km',
-    timeWindow: 'PAST_RESULTS',
-    sessions: buildStandardSessionsForWeekend(
-      `f1-26-r${spec.round}`,
-      spec.raceISO,
-      Boolean(spec.isSprint),
-      {
-        round: spec.round,
-        winnerSummary: spec.winnerSummary,
-        laps: spec.laps,
-      }
-    ),
-    prefetchMeta: {
-      trackTempForecast: `Completed • ${spec.winnerSummary}`,
-      rainChance: '5%',
-      tyreAllocation: 'C3 Hard / C4 Medium / C5 Soft',
-      lapRecord: 'Official FIA Classification',
-      drsZones: 3,
+  ...COMPLETED_2026_ROUNDS_SPECS.map((spec): F1Weekend =>
+    enrichF1WeekendWithStartingGrids({
+      id: `f1-2026-r${spec.round}-${spec.svgId}`,
+      sport: 'F1',
+      seasonYear: 2026,
+      round: spec.round,
+      hostName: spec.hostName,
+      countryName: spec.hostName,
+      dateRangePill: spec.dateRangePill,
+      dateRangeLabel: spec.dateRangePill,
+      status: 'COMPLETED',
+      winnerSummary: spec.winnerSummary,
+      trackMapUrl: buildF1TrackMapCarbonUrl(spec.trackCarbonName),
+      isSprintWeekend: Boolean(spec.isSprint),
+      grandPrixName: spec.grandPrixName,
+      officialTitle: spec.officialTitle,
+      circuitName: spec.circuitName,
+      city: spec.city,
+      countryFlagUrl: spec.flagUrl,
+      circuitSvgId: spec.svgId,
+      laps: spec.laps,
       circuitLengthKm: spec.lengthKm,
-      raceDistanceLaps: spec.laps,
-    },
-  })),
+      raceDistanceKm: '305.354 km',
+      timeWindow: 'PAST_RESULTS',
+      sessions: buildStandardSessionsForWeekend(
+        `f1-26-r${spec.round}`,
+        spec.raceISO,
+        Boolean(spec.isSprint),
+        {
+          round: spec.round,
+          winnerSummary: spec.winnerSummary,
+          laps: spec.laps,
+        }
+      ),
+      prefetchMeta: {
+        trackTempForecast: `Completed • ${spec.winnerSummary}`,
+        rainChance: '5%',
+        tyreAllocation: 'C3 Hard / C4 Medium / C5 Soft',
+        lapRecord: 'Official FIA Classification',
+        drsZones: 3,
+        circuitLengthKm: spec.lengthKm,
+        raceDistanceLaps: spec.laps,
+      },
+    })
+  ),
   ...F1_WEEKENDS.map((w): F1Weekend => {
     if (w.id === 'f1-brazil-2026' || w.id === 'f1-wknd-brazil') {
-      return {
+      return enrichF1WeekendWithStartingGrids({
         ...w,
         round: 21,
         seasonYear: 2026,
@@ -2995,10 +3212,10 @@ export const F1_2026_FULL_SEASON: F1Weekend[] = [
           circuitLengthKm: w.circuitLengthKm,
           raceDistanceLaps: w.laps,
         },
-      };
+      });
     }
     if (w.id === 'f1-vegas-2026' || w.id === 'f1-wknd-vegas') {
-      return {
+      return enrichF1WeekendWithStartingGrids({
         ...w,
         round: 22,
         seasonYear: 2026,
@@ -3015,10 +3232,10 @@ export const F1_2026_FULL_SEASON: F1Weekend[] = [
           circuitLengthKm: w.circuitLengthKm,
           raceDistanceLaps: w.laps,
         },
-      };
+      });
     }
     if (w.id === 'f1-qatar-2026' || w.id === 'f1-wknd-qatar') {
-      return {
+      return enrichF1WeekendWithStartingGrids({
         ...w,
         round: 23,
         seasonYear: 2026,
@@ -3029,15 +3246,15 @@ export const F1_2026_FULL_SEASON: F1Weekend[] = [
         timeWindow: 'ALL_UPCOMING',
         status: 'UPCOMING',
         trackMapUrl: buildF1TrackMapCarbonUrl('Qatar'),
-        isSprintWeekend: false,
+        isSprintWeekend: true,
         prefetchMeta: {
           ...w.prefetchMeta,
           circuitLengthKm: w.circuitLengthKm,
           raceDistanceLaps: w.laps,
         },
-      };
+      });
     }
-    return {
+    return enrichF1WeekendWithStartingGrids({
       ...w,
       round: 24,
       seasonYear: 2026,
@@ -3054,7 +3271,7 @@ export const F1_2026_FULL_SEASON: F1Weekend[] = [
         circuitLengthKm: w.circuitLengthKm,
         raceDistanceLaps: w.laps,
       },
-    };
+    });
   }),
 ];
 
