@@ -76,9 +76,18 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
   const [selectedFootballId, setSelectedFootballId] = useState<string>(
     LIVE_FOOTBALL_FEEDS[0]?.id || liveFootball.id
   );
-  const [selectedF1Id, setSelectedF1Id] = useState<string>(
-    LIVE_F1_FEEDS[0]?.id || liveF1.id
-  );
+  const [selectedF1Id, setSelectedF1Id] = useState<string>(() => {
+    const activeOrRecentWknd = [...upcomingF1Weekends]
+      .filter((w) =>
+        w.sessions.some(
+          (s) =>
+            evaluateF1SessionRuntimeStatus(s) === 'COMPLETED' ||
+            s.status === 'COMPLETED'
+        )
+      )
+      .sort((a, b) => b.round - a.round)[0];
+    return activeOrRecentWknd?.id || LIVE_F1_FEEDS[0]?.id || liveF1.id;
+  });
   const [selectedF1SessionId, setSelectedF1SessionId] = useState<string | null>(
     null
   );
@@ -114,6 +123,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
           wknd.gridPenalties && wknd.gridPenalties.length > 0
             ? wknd.gridPenalties
             : seedWknd.gridPenalties,
+        startingGrid: wknd.startingGrid || seedWknd.startingGrid,
         sessions: (seedWknd.isSprintWeekend && wknd.sessions.length < 5
           ? seedWknd.sessions
           : wknd.sessions
@@ -122,20 +132,24 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
             (s) => s.id === sess.id || s.name === sess.name
           );
           if (!seedSess) return sess;
+          const startMs = Date.parse(sess.startTimeISO || seedSess.startTimeISO);
+          const isFuture = Number.isFinite(startMs) && startMs > Date.now();
           return {
             ...seedSess,
             ...sess,
-            status:
-              seedSess.status === 'COMPLETED' || sess.status === 'COMPLETED'
-                ? ('COMPLETED' as const)
-                : sess.status,
-            fastestOrWinnerSummary:
-              sess.fastestOrWinnerSummary || seedSess.fastestOrWinnerSummary,
-            sessionResults:
-              sess.sessionResults &&
-              sess.sessionResults.length >= (seedSess.sessionResults?.length || 0)
-                ? sess.sessionResults
-                : seedSess.sessionResults,
+            status: isFuture
+              ? ('UPCOMING' as const)
+              : seedSess.status === 'COMPLETED' || sess.status === 'COMPLETED'
+              ? ('COMPLETED' as const)
+              : sess.status,
+            fastestOrWinnerSummary: isFuture
+              ? undefined
+              : sess.fastestOrWinnerSummary || seedSess.fastestOrWinnerSummary,
+            sessionResults: isFuture
+              ? undefined
+              : sess.sessionResults && sess.sessionResults.length > 0
+              ? sess.sessionResults
+              : seedSess.sessionResults,
           };
         }),
       });
@@ -149,12 +163,18 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
       feeds.map((f) => `${f.homeTeam.code}_${f.awayTeam.code}`)
     );
 
-    const completedOrLiveMatches = upcomingMatches.filter(
-      (m) =>
-        (m.liveStatus === 'FINAL' || m.liveStatus === 'LIVE') &&
-        typeof m.homeScore === 'number' &&
-        typeof m.awayScore === 'number'
-    );
+    const completedOrLiveMatches = [...upcomingMatches]
+      .filter(
+        (m) =>
+          (m.liveStatus === 'FINAL' || m.liveStatus === 'LIVE') &&
+          typeof m.homeScore === 'number' &&
+          typeof m.awayScore === 'number'
+      )
+      .sort(
+        (a, b) => Date.parse(b.startTimeISO) - Date.parse(a.startTimeISO)
+      );
+
+    const dynamicFeeds: LiveFootballState[] = [];
 
     for (const m of completedOrLiveMatches) {
       const key = `${m.homeTeam.code}_${m.awayTeam.code}`;
@@ -188,7 +208,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
         .filter(Boolean);
       const parsedMin = parseInt(String(m.liveMinute || '90'), 10);
 
-      feeds.push({
+      dynamicFeeds.push({
         id: `live-dyn-${m.id}`,
         competition: m.competition,
         competitionLogo: m.competitionLogo,
@@ -243,7 +263,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
       });
     }
 
-    return feeds;
+    return [...dynamicFeeds, ...feeds];
   }, [upcomingMatches]);
 
   const displayedFootballFeeds = useMemo(() => {
@@ -787,6 +807,10 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                                         ? 'border-[#E10600] text-[#E10600] bg-[#E10600]/10'
                                         : entry.tyreCompound === 'M'
                                         ? 'border-amber-400 text-amber-300 bg-amber-400/10'
+                                        : entry.tyreCompound === 'I'
+                                        ? 'border-emerald-400 text-emerald-300 bg-emerald-400/15'
+                                        : entry.tyreCompound === 'W'
+                                        ? 'border-sky-400 text-sky-300 bg-sky-400/15'
                                         : 'border-slate-300 text-slate-200 bg-slate-300/10'
                                     }`}
                                   >
@@ -1292,8 +1316,51 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
             </span>
           </div>
 
-          {/* F1 Grand Prix Feed Selector (Includes Live/Current Weekend + Completed Grand Prix Feeds) */}
+          {/* F1 Grand Prix Feed Selector (Includes Active/Recently Completed Weekend + Completed Grand Prix Feeds) */}
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+            {enrichedF1Weekends
+              .filter((w) =>
+                w.sessions.some(
+                  (s) =>
+                    evaluateF1SessionRuntimeStatus(s) === 'COMPLETED' ||
+                    s.status === 'COMPLETED'
+                )
+              )
+              .sort((a, b) => b.round - a.round)
+              .map((wknd) => {
+                const isSelected = selectedF1Id === wknd.id;
+                return (
+                  <button
+                    key={wknd.id}
+                    type="button"
+                    data-testid={`live-f1-race-selector-${wknd.id}`}
+                    onClick={() => {
+                      setSelectedF1Id(wknd.id);
+                      const doneSessions = wknd.sessions.filter(
+                        (s) =>
+                          wknd.status === 'COMPLETED' ||
+                          evaluateF1SessionRuntimeStatus(s) === 'COMPLETED'
+                      );
+                      setSelectedF1SessionId(
+                        doneSessions[doneSessions.length - 1]?.id || null
+                      );
+                    }}
+                    className={`min-h-[32px] px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-colors ${
+                      isSelected
+                        ? 'bg-[#E10600] text-[#F8FAFC] font-bold'
+                        : 'bg-[#121316] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]'
+                    }`}
+                  >
+                    <OfficialLogo
+                      src={wknd.countryFlagUrl}
+                      alt={wknd.grandPrixName}
+                      shape="Flag"
+                      size="xs"
+                    />
+                    <span>{wknd.grandPrixName}</span>
+                  </button>
+                );
+              })}
             {LIVE_F1_FEEDS.map((feed) => {
               const isSelected = selectedF1Id === feed.id;
               return (
@@ -1320,58 +1387,53 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                 </button>
               );
             })}
-            {/* Also allow touching the active Brazilian GP weekend or recent completed 2026 rounds to inspect all session results */}
-            {[
-              ...enrichedF1Weekends.filter((w) =>
-                w.sessions.some(
-                  (s) =>
-                    evaluateF1SessionRuntimeStatus(s) === 'COMPLETED' ||
-                    s.status === 'COMPLETED'
+            {/* Also allow touching recent completed 2026 rounds to inspect all session results */}
+            {F1_2026_FULL_SEASON.filter(
+              (w) =>
+                w.status === 'COMPLETED' &&
+                !enrichedF1Weekends.some((ew) => ew.round === w.round) &&
+                !LIVE_F1_FEEDS.some((f) =>
+                  w.grandPrixName
+                    .toLowerCase()
+                    .includes(f.grandPrixName.toLowerCase().replace(' grand prix', ''))
                 )
-              ),
-              ...F1_2026_FULL_SEASON.filter(
-                (w) =>
-                  w.status === 'COMPLETED' &&
-                  !LIVE_F1_FEEDS.some((f) =>
-                    w.grandPrixName
-                      .toLowerCase()
-                      .includes(f.grandPrixName.toLowerCase().replace(' grand prix', ''))
-                  )
-              ).slice(-4).reverse(),
-            ].map((wknd) => {
-              const isSelected = selectedF1Id === wknd.id;
-              return (
-                <button
-                  key={wknd.id}
-                  type="button"
-                  data-testid={`live-f1-race-selector-${wknd.id}`}
-                  onClick={() => {
-                    setSelectedF1Id(wknd.id);
-                    const doneSessions = wknd.sessions.filter(
-                      (s) =>
-                        wknd.status === 'COMPLETED' ||
-                        evaluateF1SessionRuntimeStatus(s) === 'COMPLETED'
-                    );
-                    setSelectedF1SessionId(
-                      doneSessions[doneSessions.length - 1]?.id || null
-                    );
-                  }}
-                  className={`min-h-[32px] px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-colors ${
-                    isSelected
-                      ? 'bg-[#E10600] text-[#F8FAFC] font-bold'
-                      : 'bg-[#121316] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]'
-                  }`}
-                >
-                  <OfficialLogo
-                    src={wknd.countryFlagUrl}
-                    alt={wknd.grandPrixName}
-                    shape="Flag"
-                    size="xs"
-                  />
-                  <span>{wknd.grandPrixName}</span>
-                </button>
-              );
-            })}
+            )
+              .slice(-4)
+              .reverse()
+              .map((wknd) => {
+                const isSelected = selectedF1Id === wknd.id;
+                return (
+                  <button
+                    key={wknd.id}
+                    type="button"
+                    data-testid={`live-f1-race-selector-${wknd.id}`}
+                    onClick={() => {
+                      setSelectedF1Id(wknd.id);
+                      const doneSessions = wknd.sessions.filter(
+                        (s) =>
+                          wknd.status === 'COMPLETED' ||
+                          evaluateF1SessionRuntimeStatus(s) === 'COMPLETED'
+                      );
+                      setSelectedF1SessionId(
+                        doneSessions[doneSessions.length - 1]?.id || null
+                      );
+                    }}
+                    className={`min-h-[32px] px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-colors ${
+                      isSelected
+                        ? 'bg-[#E10600] text-[#F8FAFC] font-bold'
+                        : 'bg-[#121316] text-[#8E95A5] border border-[#1E2028] hover:text-[#F8FAFC]'
+                    }`}
+                  >
+                    <OfficialLogo
+                      src={wknd.countryFlagUrl}
+                      alt={wknd.grandPrixName}
+                      shape="Flag"
+                      size="xs"
+                    />
+                    <span>{wknd.grandPrixName}</span>
+                  </button>
+                );
+              })}
           </div>
 
           <div className="rounded-xl border border-[#1E2028] bg-[#121316] overflow-hidden">
@@ -1383,10 +1445,23 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                 matchedF1Weekend?.grandPrixName || activeF1.grandPrixName;
               const displayCircuitSvg =
                 matchedF1Weekend?.circuitSvgId || activeF1.circuitSvgId;
+              const isDedicatedLiveFeed = LIVE_F1_FEEDS.some(
+                (f) => f.id === selectedF1Id
+              );
+              const doneWeekendSessions = matchedF1Weekend
+                ? matchedF1Weekend.sessions.filter(
+                    (s) =>
+                      matchedF1Weekend.status === 'COMPLETED' ||
+                      evaluateF1SessionRuntimeStatus(s) === 'COMPLETED'
+                  )
+                : [];
               const activeCustomSession =
                 matchedF1Weekend?.sessions.find(
                   (s) => s.id === selectedF1SessionId
-                ) || null;
+                ) ||
+                (!isDedicatedLiveFeed && doneWeekendSessions.length > 0
+                  ? doneWeekendSessions[doneWeekendSessions.length - 1]
+                  : null);
 
               return (
                 <>
@@ -1452,13 +1527,12 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                               matchedF1Weekend.status === 'COMPLETED' ||
                               evaluateF1SessionRuntimeStatus(sess) ===
                                 'COMPLETED';
-                            const isRaceFeedDefault =
-                              !selectedF1SessionId &&
-                              sess.name === 'Grand Prix' &&
-                              LIVE_F1_FEEDS.some((f) => f.id === selectedF1Id);
                             const isSelectedSess =
-                              selectedF1SessionId === sess.id ||
-                              isRaceFeedDefault;
+                              activeCustomSession
+                                ? activeCustomSession.id === sess.id
+                                : !selectedF1SessionId &&
+                                  sess.name === 'Grand Prix' &&
+                                  isDedicatedLiveFeed;
 
                             return (
                               <button
@@ -1470,9 +1544,7 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                                   if (!isDone) return;
                                   if (
                                     sess.name === 'Grand Prix' &&
-                                    LIVE_F1_FEEDS.some(
-                                      (f) => f.id === selectedF1Id
-                                    )
+                                    isDedicatedLiveFeed
                                   ) {
                                     setSelectedF1SessionId(null);
                                   } else {
@@ -1648,27 +1720,29 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
                             </div>
 
                             <div className="flex items-center gap-3 shrink-0 tabular-nums whitespace-nowrap">
-                              <span
-                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                  slot.isPitLaneStart
-                                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                                    : slot.posDelta < 0
-                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                                    : slot.posDelta > 0
-                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                                    : 'bg-[#181A20] text-[#8E95A5]'
-                                }`}
-                              >
-                                {slot.isPitLaneStart
-                                  ? `Q${slot.qualifiedPos} → PIT`
-                                  : slot.posDelta < 0
-                                  ? `Q${slot.qualifiedPos} → P${slot.gridPos} (${slot.posDelta})`
-                                  : slot.posDelta > 0
-                                  ? `Q${slot.qualifiedPos} → P${slot.gridPos} (+${slot.posDelta})`
-                                  : `Q${slot.qualifiedPos}`}
-                              </span>
+                              {(() => {
+                                const qPos = slot.qualiPos ?? slot.gridPos;
+                                const posDelta = qPos - slot.gridPos;
+                                return (
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                      slot.penaltyApplied || posDelta < 0
+                                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                        : posDelta > 0
+                                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                        : 'bg-[#181A20] text-[#8E95A5]'
+                                    }`}
+                                  >
+                                    {posDelta < 0
+                                      ? `Q${qPos} → P${slot.gridPos} (${posDelta})`
+                                      : posDelta > 0
+                                      ? `Q${qPos} → P${slot.gridPos} (+${posDelta})`
+                                      : `Q${qPos} → P${slot.gridPos}`}
+                                  </span>
+                                );
+                              })()}
                               <span className="text-xs font-bold text-[#F8FAFC] w-16 text-right">
-                                {slot.qualifyingTime}
+                                {slot.qualiBestLapTime}
                               </span>
                             </div>
                           </button>
@@ -1740,14 +1814,31 @@ export const LiveCenterTab: React.FC<LiveCenterTabProps> = ({
 
                             <div className="flex items-center gap-3 shrink-0">
                               <div className="text-right tabular-nums">
-                                <div className="text-xs font-bold text-[#F8FAFC]">
+                                <div
+                                  className={`text-xs font-bold ${
+                                    entry.statusText === 'DNF' ||
+                                    entry.statusText === 'DNS' ||
+                                    entry.statusText === 'DSQ' ||
+                                    entry.timeOrGap === 'DNF' ||
+                                    entry.timeOrGap === 'DNS' ||
+                                    entry.timeOrGap === 'DSQ'
+                                      ? 'text-rose-400'
+                                      : entry.pos === 1
+                                      ? 'text-emerald-400'
+                                      : 'text-[#F8FAFC]'
+                                  }`}
+                                >
                                   {entry.timeOrGap}
                                 </div>
-                                {typeof entry.lapsCompleted === 'number' && (
+                                {entry.tyreStints && entry.tyreStints.length > 1 ? (
+                                  <div className="text-[10px] text-amber-300/90 font-semibold">
+                                    {entry.tyreStints.join(' → ')} ({entry.lapsCompleted}L)
+                                  </div>
+                                ) : typeof entry.lapsCompleted === 'number' ? (
                                   <div className="text-[10px] text-[#8E95A5]">
                                     {entry.lapsCompleted} Laps
                                   </div>
-                                )}
+                                ) : null}
                               </div>
                               {entry.tyreCompound && (
                                 <TyreCompoundBadge

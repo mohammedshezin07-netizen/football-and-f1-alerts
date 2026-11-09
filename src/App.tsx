@@ -37,6 +37,7 @@ import {
   FootballMatch,
   FootballPlayerStats,
   LiveF1State,
+  LiveFootballState,
   PrefetchCacheEntry,
 } from './types/sports';
 import {
@@ -51,6 +52,8 @@ import {
   clearOutdatedCache,
   fetchSantosFCFixturesAndStandings,
   isCacheEntryExpired,
+  sanitizeAndDeduplicateFixtures,
+  sanitizeAndVerifyF1Weekends,
   verifyAndSyncSportsData,
 } from './services/sportsApi';
 import { purgeLegacyLocalStorageKeys } from './utils/dataValidator';
@@ -58,7 +61,10 @@ import {
   syncF1RosterAndStandings,
   VERIFIED_ROSTER_TRANSFERS,
 } from './services/f1AutoSync';
-import { formatSimpleCardTime } from './services/apiClient';
+import {
+  formatSimpleCardTime,
+  shouldActivateLivePolling,
+} from './services/apiClient';
 import { playAlarmAudio } from './utils/soundEngine';
 import { TopUtilityBar } from './components/TopUtilityBar';
 import { ScheduleTab } from './components/ScheduleTab';
@@ -75,6 +81,7 @@ import { AppInstallAndSyncModal } from './components/AppInstallAndSyncModal';
 import {
   cancelSamsungMatchAlarm,
   setSamsungMatchAlarm,
+  syncQueuedNativeAlarmsWithin24Hours,
 } from './services/nativeAlarm';
 
 type ActiveTab = 'SCHEDULE' | 'LIVE' | 'STANDINGS' | 'ARCHIVE' | 'TEAMS_ALERTS';
@@ -89,9 +96,9 @@ const STORAGE_KEYS = {
   PLAYER_STATS_CACHE: 'apex_pitch_verified_v5_player_stats',
   DRIVER_STATS_CACHE: 'apex_pitch_verified_v5_driver_stats',
   LAST_SYNC_IST: 'apex_pitch_verified_v5_last_sync_ist',
-  MATCHES_DATA: 'apex_pitch_verified_v5_matches_data_v3',
+  MATCHES_DATA: 'apex_pitch_verified_v5_matches_data_v15',
   FOOTBALL_STANDINGS_DATA: 'apex_pitch_verified_v5_football_standings',
-  F1_WEEKENDS_DATA: 'apex_pitch_verified_v5_f1_weekends_data_v4',
+  F1_WEEKENDS_DATA: 'apex_pitch_verified_v5_f1_weekends_data_v15',
   CLASH_SETTINGS: 'apex_pitch_verified_v5_clash_settings',
 };
 
@@ -185,7 +192,7 @@ export default function App() {
     return stored;
   });
   const [isOnline, setIsOnline] = useState<boolean>(() =>
-    typeof navigator !== 'undefined' ? navigator.onLine : true
+    typeof navigator !== 'undefined' ? navigator.onLine !== false : true
   );
   const [isSyncingLiveApi, setIsSyncingLiveApi] = useState<boolean>(false);
   const [liveApiSources, setLiveApiSources] = useState<string[]>([
@@ -203,11 +210,15 @@ export default function App() {
   );
 
   const [matches, setMatches] = useState<FootballMatch[]>(() =>
-    readStorage(STORAGE_KEYS.MATCHES_DATA, UPCOMING_FOOTBALL_MATCHES)
+    sanitizeAndDeduplicateFixtures(
+      readStorage(STORAGE_KEYS.MATCHES_DATA, UPCOMING_FOOTBALL_MATCHES)
+    )
   );
 
   const [f1Weekends, setF1Weekends] = useState<F1Weekend[]>(() =>
-    readStorage(STORAGE_KEYS.F1_WEEKENDS_DATA, UPCOMING_F1_WEEKENDS)
+    sanitizeAndVerifyF1Weekends(
+      readStorage(STORAGE_KEYS.F1_WEEKENDS_DATA, UPCOMING_F1_WEEKENDS)
+    )
   );
 
   const [followedTeamCodes, setFollowedTeamCodes] = useState<string[]>(() =>
@@ -271,6 +282,9 @@ export default function App() {
   >(VERIFIED_ROSTER_TRANSFERS);
 
   const [liveF1, setLiveF1] = useState<LiveF1State>(LIVE_F1_INITIAL);
+  const [liveFootball, setLiveFootball] = useState<LiveFootballState>(
+    LIVE_FOOTBALL_INITIAL
+  );
 
   const [logoCacheStatus, setLogoCacheStatus] = useState<{
     cachedCount: number;
@@ -425,6 +439,46 @@ export default function App() {
       .then((verified) => {
         if (cancelled) return;
         setMatches(verified.matches);
+        const activeOrRecentMatch =
+          verified.matches.find((m) => m.liveStatus === 'LIVE') ||
+          verified.matches.find(
+            (m) =>
+              m.liveStatus === 'FINAL' &&
+              typeof m.homeScore === 'number' &&
+              typeof m.awayScore === 'number'
+          );
+        if (activeOrRecentMatch) {
+          const parsedMin = parseInt(
+            String(activeOrRecentMatch.liveMinute || '90').replace(/\D/g, ''),
+            10
+          );
+          setLiveFootball((prev) => ({
+            ...prev,
+            id: activeOrRecentMatch.id,
+            competition: activeOrRecentMatch.competition,
+            competitionLogo: activeOrRecentMatch.competitionLogo,
+            venue: activeOrRecentMatch.venue,
+            minute: Number.isNaN(parsedMin) ? prev.minute : parsedMin,
+            status:
+              activeOrRecentMatch.liveStatus === 'LIVE'
+                ? 'LIVE 2ND HALF'
+                : 'FT',
+            homeTeam: {
+              ...prev.homeTeam,
+              name: activeOrRecentMatch.homeTeam.name,
+              code: activeOrRecentMatch.homeTeam.code,
+              logo: activeOrRecentMatch.homeTeam.logo,
+              score: activeOrRecentMatch.homeScore ?? prev.homeTeam.score,
+            },
+            awayTeam: {
+              ...prev.awayTeam,
+              name: activeOrRecentMatch.awayTeam.name,
+              code: activeOrRecentMatch.awayTeam.code,
+              logo: activeOrRecentMatch.awayTeam.logo,
+              score: activeOrRecentMatch.awayScore ?? prev.awayTeam.score,
+            },
+          }));
+        }
         if (verified.footballLeagueTables.some((t) => t.rows.length > 0)) {
           setFootballLeagueTables(verified.footballLeagueTables);
         }
@@ -436,6 +490,8 @@ export default function App() {
       .catch(() => {
         // Fallback already loaded
       });
+
+    void syncQueuedNativeAlarmsWithin24Hours();
 
     return () => {
       cancelled = true;
@@ -458,6 +514,46 @@ export default function App() {
       ]);
 
       setMatches(verified.matches);
+      const activeOrRecentMatch =
+        verified.matches.find((m) => m.liveStatus === 'LIVE') ||
+        verified.matches.find(
+          (m) =>
+            m.liveStatus === 'FINAL' &&
+            typeof m.homeScore === 'number' &&
+            typeof m.awayScore === 'number'
+        );
+      if (activeOrRecentMatch) {
+        const parsedMin = parseInt(
+          String(activeOrRecentMatch.liveMinute || '90').replace(/\D/g, ''),
+          10
+        );
+        setLiveFootball((prev) => ({
+          ...prev,
+          id: activeOrRecentMatch.id,
+          competition: activeOrRecentMatch.competition,
+          competitionLogo: activeOrRecentMatch.competitionLogo,
+          venue: activeOrRecentMatch.venue,
+          minute: Number.isNaN(parsedMin) ? prev.minute : parsedMin,
+          status:
+            activeOrRecentMatch.liveStatus === 'LIVE'
+              ? 'LIVE 2ND HALF'
+              : 'FT',
+          homeTeam: {
+            ...prev.homeTeam,
+            name: activeOrRecentMatch.homeTeam.name,
+            code: activeOrRecentMatch.homeTeam.code,
+            logo: activeOrRecentMatch.homeTeam.logo,
+            score: activeOrRecentMatch.homeScore ?? prev.homeTeam.score,
+          },
+          awayTeam: {
+            ...prev.awayTeam,
+            name: activeOrRecentMatch.awayTeam.name,
+            code: activeOrRecentMatch.awayTeam.code,
+            logo: activeOrRecentMatch.awayTeam.logo,
+            score: activeOrRecentMatch.awayScore ?? prev.awayTeam.score,
+          },
+        }));
+      }
       if (santosSync.footballLeagueTables.some((t) => t.rows.length > 0)) {
         setFootballLeagueTables(santosSync.footballLeagueTables);
       } else if (verified.footballLeagueTables.some((t) => t.rows.length > 0)) {
@@ -486,6 +582,57 @@ export default function App() {
       setIsSyncingLiveApi(false);
     }
   }, [isOnline]);
+
+  // Smart Background Live Polling Gatekeeper:
+  // Polls every 45 seconds ONLY when at least one match or F1 session is verified as 'LIVE'.
+  // Remains at 0 req/s when no event is live.
+  useEffect(() => {
+    if (!isOnline) return;
+    const candidateEvents = [
+      ...matches.map((m) => ({
+        startTimeISO: m.startTimeISO,
+        durationMinutes: m.durationMinutes ?? 115,
+        apiState:
+          m.liveStatus === 'LIVE'
+            ? 'in'
+            : m.liveStatus === 'FINAL'
+            ? 'post'
+            : 'pre',
+      })),
+      ...f1Weekends.flatMap((w) =>
+        w.sessions.map((s) => ({
+          startTimeISO: s.startTimeISO,
+          durationMinutes: s.durationMinutes ?? 90,
+          apiState:
+            s.status === 'LIVE'
+              ? 'in'
+              : s.status === 'COMPLETED'
+              ? 'post'
+              : 'pre',
+        }))
+      ),
+    ];
+
+    if (!shouldActivateLivePolling(candidateEvents)) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void verifyAndSyncSportsData({
+        fallbackMatches: matches,
+        fallbackF1Weekends: f1Weekends,
+        fallbackLiveF1: liveF1,
+        forceRefresh: true,
+      }).then((verified) => {
+        setMatches(verified.matches);
+        setF1Weekends(verified.f1Weekends);
+        setLiveF1(verified.liveF1);
+        setLastSyncedAtIST(verified.lastVerifiedIST);
+      });
+    }, 45_000);
+
+    return () => window.clearInterval(timer);
+  }, [isOnline, matches, f1Weekends, liveF1]);
 
   const handleRegisterPrefetchedEntries = useCallback(
     (entries: PrefetchCacheEntry[]) => {
@@ -521,17 +668,11 @@ export default function App() {
       return [alarm, ...prev];
     });
 
-    const triggerMs =
-      new Date(alarm.eventStartTimeISO).getTime() -
-      alarm.leadTimeMinutes * 60 * 1000;
-    const triggerISO = Number.isNaN(triggerMs)
-      ? alarm.eventStartTimeISO
-      : new Date(triggerMs).toISOString();
-
     setSamsungMatchAlarm({
       eventId: alarm.id,
       title: alarm.title,
-      eventStartTimeISO: triggerISO,
+      eventStartTimeISO: alarm.eventStartTimeISO,
+      leadTimeMinutes: alarm.leadTimeMinutes,
     }).then((res) => {
       setPushBanner({
         sport: alarm.sport,
@@ -623,11 +764,13 @@ export default function App() {
         eventId: fbAlarm.id,
         title: fbAlarm.title,
         eventStartTimeISO: fbAlarm.eventStartTimeISO,
+        leadTimeMinutes: fbAlarm.leadTimeMinutes,
       });
       void setSamsungMatchAlarm({
         eventId: fbAlarm2.id,
         title: fbAlarm2.title,
         eventStartTimeISO: fbAlarm2.eventStartTimeISO,
+        leadTimeMinutes: fbAlarm2.leadTimeMinutes,
       });
 
       setPushBanner({
@@ -665,11 +808,13 @@ export default function App() {
       eventId: fbAlarm.id,
       title: fbAlarm.title,
       eventStartTimeISO: fbAlarm.eventStartTimeISO,
+      leadTimeMinutes: fbAlarm.leadTimeMinutes,
     });
     void setSamsungMatchAlarm({
       eventId: f1Alarm.id,
       title: f1Alarm.title,
       eventStartTimeISO: f1Alarm.eventStartTimeISO,
+      leadTimeMinutes: f1Alarm.leadTimeMinutes,
     });
 
     setPushBanner({
@@ -1030,7 +1175,7 @@ export default function App() {
 
           {activeTab === 'LIVE' && (
             <LiveCenterTab
-              liveFootball={LIVE_FOOTBALL_INITIAL}
+              liveFootball={liveFootball}
               liveF1={liveF1}
               spoilerFree={spoilerFree}
               isOnline={isOnline}

@@ -165,10 +165,19 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
     }
   };
 
-  // Official F1 App Season Switcher (2025 | 2026 | 2027)
-  const [selectedF1Season, setSelectedF1Season] = useState<2025 | 2026 | 2027>(
-    2026
+  // Dynamic F1 Season Switcher: Current Season + Last 2 Years + Next Season (e.g. 2024 | 2025 | 2026 | 2027, or in 2030 -> 2028 | 2029 | 2030 | 2031)
+  const currentSeasonYear = new Date().getUTCFullYear();
+  const availableF1Seasons = useMemo(
+    () => [
+      currentSeasonYear - 2,
+      currentSeasonYear - 1,
+      currentSeasonYear,
+      currentSeasonYear + 1,
+    ],
+    [currentSeasonYear]
   );
+  const [selectedF1Season, setSelectedF1Season] =
+    useState<number>(currentSeasonYear);
   const [seasonWeekendsMap, setSeasonWeekendsMap] = useState<
     Record<number, F1Weekend[]>
   >({
@@ -194,7 +203,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
   const [activeVisibleIndex, setActiveVisibleIndex] = useState<number>(0);
   const cardRefs = useRef<Record<string, HTMLElement | null>>({});
 
-  // Sync dynamic F1 calendar when season changes
+  // Sync dynamic F1 calendar from OpenF1 when season changes
   useEffect(() => {
     let cancelled = false;
     fetchF1SeasonCalendar(selectedF1Season)
@@ -262,19 +271,21 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
 
   // For Formula 1 calendar display, use the selected season's full calendar enriched with any synced sessions and post-penalty starting grids
   const activeF1SeasonCalendar = useMemo(() => {
-    if (selectedF1Season === 2026) {
-      const base2026 = seasonWeekendsMap[2026]?.length
-        ? seasonWeekendsMap[2026]
+    const nowMs = Date.now();
+    if (selectedF1Season === currentSeasonYear) {
+      const baseCurrent = seasonWeekendsMap[currentSeasonYear]?.length
+        ? seasonWeekendsMap[currentSeasonYear]
         : F1_2026_FULL_SEASON;
-      return base2026.map((wknd) => {
+      return baseCurrent.map((wknd) => {
         const syncedMatch = f1Weekends.find(
           (fw) =>
             fw.id === wknd.id ||
-            fw.round === wknd.round ||
-            fw.circuitSvgId === wknd.circuitSvgId
+            (fw.round === wknd.round &&
+              (fw.seasonYear ?? currentSeasonYear) ===
+                (wknd.seasonYear ?? currentSeasonYear))
         );
         if (!syncedMatch || !syncedMatch.sessions?.length) {
-          return enrichF1WeekendWithStartingGrids(wknd);
+          return enrichF1WeekendWithStartingGrids(wknd, nowMs);
         }
         const isSprint = Boolean(
           syncedMatch.isSprintWeekend ?? wknd.isSprintWeekend
@@ -285,11 +296,19 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
               (ss) => ss.id === baseSess.id || ss.name === baseSess.name
             ) || syncedMatch.sessions[idx];
           if (!syncedSess) return baseSess;
-          const bestResults =
-            (baseSess.sessionResults?.length || 0) >=
-            (syncedSess.sessionResults?.length || 0)
-              ? baseSess.sessionResults
-              : syncedSess.sessionResults;
+
+          const startMs = Date.parse(
+            syncedSess.startTimeISO || baseSess.startTimeISO
+          );
+          const isFutureSess = Number.isFinite(startMs) && startMs > nowMs;
+
+          // Always prefer live-synced OpenF1 sessionResults over static base
+          const bestResults = isFutureSess
+            ? undefined
+            : syncedSess.sessionResults && syncedSess.sessionResults.length > 0
+            ? syncedSess.sessionResults
+            : baseSess.sessionResults;
+
           return {
             ...baseSess,
             ...syncedSess,
@@ -299,27 +318,68 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 : isSprint && idx === 2
                 ? ('Sprint' as const)
                 : baseSess.name,
-            status:
-              baseSess.status === 'COMPLETED' || syncedSess.status === 'COMPLETED'
-                ? ('COMPLETED' as const)
-                : syncedSess.status || baseSess.status,
-            fastestOrWinnerSummary:
-              syncedSess.fastestOrWinnerSummary || baseSess.fastestOrWinnerSummary,
+            status: isFutureSess
+              ? ('UPCOMING' as const)
+              : syncedSess.status === 'COMPLETED' ||
+                baseSess.status === 'COMPLETED'
+              ? ('COMPLETED' as const)
+              : syncedSess.status || baseSess.status,
+            fastestOrWinnerSummary: isFutureSess
+              ? undefined
+              : syncedSess.fastestOrWinnerSummary ||
+                baseSess.fastestOrWinnerSummary,
             sessionResults: bestResults,
           };
         });
-        return enrichF1WeekendWithStartingGrids({
-          ...wknd,
-          isSprintWeekend: isSprint,
-          gridPenalties: syncedMatch.gridPenalties || wknd.gridPenalties,
-          sessions: mergedSessions,
-        });
+
+        const gpSess = mergedSessions.find((s) => s.name === 'Grand Prix');
+        const gpStartMs = gpSess ? Date.parse(gpSess.startTimeISO) : NaN;
+        const isFutureGP = Number.isFinite(gpStartMs) && gpStartMs > nowMs;
+
+        return enrichF1WeekendWithStartingGrids(
+          {
+            ...wknd,
+            status: isFutureGP
+              ? mergedSessions.some(
+                  (s) => s.status === 'LIVE' || s.status === 'COMPLETED'
+                )
+                ? 'LIVE'
+                : 'UPCOMING'
+              : gpSess?.status === 'COMPLETED'
+              ? 'COMPLETED'
+              : syncedMatch.status || wknd.status,
+            winnerSummary: isFutureGP
+              ? undefined
+              : gpSess?.fastestOrWinnerSummary ||
+                syncedMatch.winnerSummary ||
+                wknd.winnerSummary,
+            isSprintWeekend: isSprint,
+            startingGrid: syncedMatch.startingGrid || wknd.startingGrid,
+            gridPenalties: syncedMatch.gridPenalties || wknd.gridPenalties,
+            sessions: mergedSessions,
+          },
+          nowMs
+        );
       });
     }
-    return (seasonWeekendsMap[selectedF1Season] || F1_2026_FULL_SEASON).map(
-      (wknd) => enrichF1WeekendWithStartingGrids(wknd)
+    return (seasonWeekendsMap[selectedF1Season] || []).map((wknd) =>
+      enrichF1WeekendWithStartingGrids(wknd, nowMs)
     );
-  }, [selectedF1Season, seasonWeekendsMap, f1Weekends]);
+  }, [selectedF1Season, currentSeasonYear, seasonWeekendsMap, f1Weekends]);
+
+  // Keep selectedWeekendModal synced when OpenF1 finishes loading results
+  useEffect(() => {
+    if (!selectedWeekendModal) return;
+    const updated = activeF1SeasonCalendar.find(
+      (w) =>
+        w.id === selectedWeekendModal.id ||
+        (w.round === selectedWeekendModal.round &&
+          w.seasonYear === selectedWeekendModal.seasonYear)
+    );
+    if (updated && updated !== selectedWeekendModal) {
+      setSelectedWeekendModal(updated);
+    }
+  }, [activeF1SeasonCalendar, selectedWeekendModal]);
 
   const filteredWeekends = useMemo(() => {
     if (sportFilter === 'FOOTBALL') return [];
@@ -343,18 +403,20 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
           w.city.toLowerCase().includes(normalizedQuery)
       );
     }
-    if (selectedF1Season !== 2026) {
+    if (selectedF1Season !== currentSeasonYear) {
       return activeF1SeasonCalendar;
     }
     if (timeWindow === 'ALL_UPCOMING') {
       return activeF1SeasonCalendar;
     }
     if (timeWindow === 'PAST_RESULTS') {
-      return activeF1SeasonCalendar.filter(
-        (w) =>
-          evaluateF1WeekendLiveStatus(w) === 'COMPLETED' ||
-          w.timeWindow === 'PAST_RESULTS'
-      );
+      return activeF1SeasonCalendar
+        .filter(
+          (w) =>
+            evaluateF1WeekendLiveStatus(w) === 'COMPLETED' ||
+            w.timeWindow === 'PAST_RESULTS'
+        )
+        .sort((a, b) => b.round - a.round);
     }
     return filterF1Weekends(
       activeF1SeasonCalendar,
@@ -1626,9 +1688,9 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                               }`}
                             >
                               {isFinished
-                                ? `FT  ${match.homeScore ?? 0} – ${
-                                    match.awayScore ?? 0
-                                  }`
+                                ? hasScore
+                                  ? `FT  ${match.homeScore} – ${match.awayScore}`
+                                  : 'FT • SYNCING'
                                 : isLive
                                 ? hasScore
                                   ? `LIVE  ${match.homeScore} – ${match.awayScore}`
@@ -1673,24 +1735,23 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
           className="space-y-3.5"
           aria-label="Official Formula 1 Race Calendar"
         >
-          {/* Official F1 App Season Switcher Bar with Red Bottom Border */}
+          {/* Official F1 App Season Switcher Bar with Red Bottom Border (Current Season + Last 2 Years + Next Year) */}
           <div className="bg-[#121316] border-y border-[#1E2028] border-b-2 border-b-[#E10600] px-3 py-2.5 flex items-center justify-between gap-2 overflow-hidden">
             <button
               type="button"
-              onClick={() =>
-                setSelectedF1Season((prev) =>
-                  prev === 2027 ? 2026 : 2025
-                )
-              }
-              disabled={selectedF1Season === 2025}
+              onClick={() => {
+                const idx = availableF1Seasons.indexOf(selectedF1Season);
+                if (idx > 0) setSelectedF1Season(availableF1Seasons[idx - 1]);
+              }}
+              disabled={selectedF1Season === availableF1Seasons[0]}
               aria-label="Previous F1 Season"
               className="p-1 text-[#8E95A5] hover:text-[#F8FAFC] disabled:opacity-30 shrink-0"
             >
               <ChevronLeft className="w-4 h-4 stroke-[2]" />
             </button>
 
-            <div className="flex items-center gap-1.5 min-[380px]:gap-3">
-              {([2025, 2026, 2027] as const).map((yr) => {
+            <div className="flex items-center gap-1 min-[380px]:gap-2 overflow-x-auto no-scrollbar">
+              {availableF1Seasons.map((yr) => {
                 const active = selectedF1Season === yr;
                 return (
                   <button
@@ -1704,7 +1765,7 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                         : 'text-[#8E95A5] hover:text-[#F8FAFC]'
                     }`}
                   >
-                    {yr} season
+                    {yr}
                   </button>
                 );
               })}
@@ -1712,12 +1773,16 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
 
             <button
               type="button"
-              onClick={() =>
-                setSelectedF1Season((prev) =>
-                  prev === 2025 ? 2026 : 2027
-                )
+              onClick={() => {
+                const idx = availableF1Seasons.indexOf(selectedF1Season);
+                if (idx !== -1 && idx < availableF1Seasons.length - 1) {
+                  setSelectedF1Season(availableF1Seasons[idx + 1]);
+                }
+              }}
+              disabled={
+                selectedF1Season ===
+                availableF1Seasons[availableF1Seasons.length - 1]
               }
-              disabled={selectedF1Season === 2027}
               aria-label="Next F1 Season"
               className="p-1 text-[#8E95A5] hover:text-[#F8FAFC] disabled:opacity-30 shrink-0"
             >
@@ -1784,19 +1849,11 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                 const isWeekendLive = wkndLiveStatus === 'LIVE';
                 const isWeekendCompleted = wkndLiveStatus === 'COMPLETED';
                 const isHeroCard = nextHeroWeekend?.id === wknd.id;
-                const hasAnyDoneSessionWithResults = (wknd.sessions || []).some(
-                  (s) =>
-                    (wknd.status === 'COMPLETED' ||
-                      evaluateF1SessionRuntimeStatus(s) === 'COMPLETED') &&
-                    Boolean(s.fastestOrWinnerSummary)
-                );
-                const showInlineSessions =
-                  timeWindow === 'THIS_WEEK' ||
-                  timeWindow === 'NEXT_WEEK' ||
-                  isWeekendLive ||
-                  hasAnyDoneSessionWithResults ||
-                  Boolean(wknd.isSprintWeekend) ||
-                  wknd.round >= 21;
+                const gpSession =
+                  wknd.sessions?.find((s) => s.name === 'Grand Prix') ||
+                  wknd.sessions?.[wknd.sessions.length - 1];
+                const winnerBannerText =
+                  gpSession?.fastestOrWinnerSummary || wknd.winnerSummary;
 
                 return (
                   <div
@@ -1892,176 +1949,32 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                       />
                     </div>
 
-                    {/* Inline Verified IST Session Breakdown */}
-                    {showInlineSessions && wknd.sessions?.length > 0 && (
-                      <div className="pt-2.5 border-t border-[#1E2028] grid grid-cols-1 gap-1.5">
-                        {wknd.sessions.map((sess) => {
-                          const sessRuntimeStatus =
-                            evaluateF1SessionRuntimeStatus(sess);
-                          const isSessLive = sessRuntimeStatus === 'LIVE';
-                          const isSessDone =
-                            sessRuntimeStatus === 'COMPLETED' ||
-                            wknd.status === 'COMPLETED';
-                          const compactSessTime = formatSimpleCardTime(
-                            sess.startTimeISO
-                          );
-                          const showRaceStartingGridRow =
-                            sess.name === 'Qualifying' &&
-                            isSessDone &&
-                            Array.isArray(wknd.startingGrid) &&
-                            wknd.startingGrid.length > 0;
-                          const showSprintStartingGridRow =
-                            sess.name === 'Sprint Qualifying' &&
-                            isSessDone &&
-                            Array.isArray(wknd.sprintStartingGrid) &&
-                            wknd.sprintStartingGrid.length > 0;
+                    {/* Clean Progressive Disclosure Summary Strip (FP1/FP2/FP3/Qualifying/Grid open when pressed) */}
+                    <div className="pt-2.5 border-t border-[#1E2028] flex items-center justify-between gap-2 text-xs">
+                      {isWeekendCompleted && winnerBannerText ? (
+                        <div className="min-w-0 flex-1 flex items-center gap-1.5 text-emerald-300 font-semibold truncate">
+                          <span className="truncate">🏆 {winnerBannerText}</span>
+                        </div>
+                      ) : gpSession ? (
+                        <div className="min-w-0 flex-1 flex items-center gap-1.5 text-[#8E95A5] truncate">
+                          <span className="font-bold text-[#E10600] uppercase shrink-0">
+                            Grand Prix:
+                          </span>
+                          <span className="text-[#F8FAFC] font-semibold tabular-nums truncate">
+                            {gpSession.istDateLabel} •{' '}
+                            {formatSimpleCardTime(gpSession.startTimeISO)}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="text-[#8E95A5] truncate">
+                          {wknd.circuitName}
+                        </div>
+                      )}
 
-                          return (
-                            <React.Fragment key={sess.id}>
-                              <div
-                                data-testid={`schedule-f1-session-${sess.id}`}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openF1WeekendModal(wknd, sess.id);
-                                }}
-                                className={`px-2.5 py-2 rounded-lg text-[11px] transition-colors overflow-hidden ${
-                                  isSessLive
-                                    ? 'bg-[#E10600]/20 border border-[#E10600]/60'
-                                    : isSessDone && sess.fastestOrWinnerSummary
-                                    ? 'bg-[#181A20] border border-emerald-500/30 hover:border-emerald-400/60'
-                                    : 'bg-[#181A20] border border-[#1E2028]'
-                                }`}
-                              >
-                                <div className="flex items-center justify-between gap-2 overflow-hidden">
-                                  <div className="flex items-center gap-1.5 min-w-0 flex-1 overflow-hidden">
-                                    <span
-                                      className={`font-bold uppercase truncate min-w-0 ${
-                                        isSessLive
-                                          ? 'text-[#F8FAFC]'
-                                          : sess.name === 'Grand Prix'
-                                          ? 'text-[#E10600]'
-                                          : sess.name === 'Qualifying' ||
-                                            sess.name === 'Sprint Qualifying'
-                                          ? 'text-amber-400'
-                                          : 'text-[#F8FAFC]'
-                                      }`}
-                                    >
-                                      {sess.name}
-                                    </span>
-                                    <span className="text-[#8E95A5] shrink-0">
-                                      •
-                                    </span>
-                                    <span className="text-[#8E95A5] font-medium tabular-nums whitespace-nowrap shrink-0">
-                                      {sess.istDateLabel}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
-                                    {isSessLive && (
-                                      <span className="px-1.5 py-0.5 rounded-md bg-[#E10600] text-[#F8FAFC] text-[9px] font-extrabold uppercase whitespace-nowrap shrink-0">
-                                        LIVE
-                                      </span>
-                                    )}
-                                    {isSessDone && !isSessLive && (
-                                      <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 uppercase whitespace-nowrap shrink-0">
-                                        {sess.sessionResults?.length
-                                          ? 'DONE • TAP FOR GRID'
-                                          : 'DONE'}
-                                      </span>
-                                    )}
-                                    {!isSessDone &&
-                                      !isSessLive &&
-                                      isAlarmArmed(sess.id) && (
-                                        <span
-                                          data-testid={`armed-badge-${sess.id}`}
-                                          className="px-1.5 py-0.5 rounded-md bg-amber-400/15 border border-amber-400/40 text-[9px] font-bold text-amber-300 flex items-center gap-0.5 whitespace-nowrap shrink-0"
-                                        >
-                                          <Bell className="w-2.5 h-2.5 text-amber-400 shrink-0" />
-                                          <span>Active / Armed</span>
-                                        </span>
-                                      )}
-                                    <span className="font-bold text-[#F8FAFC] tabular-nums whitespace-nowrap shrink-0">
-                                      {compactSessTime}
-                                    </span>
-                                    {!isSessDone && !isSessLive && (
-                                      <button
-                                        type="button"
-                                        data-testid={`card-calendar-export-${sess.id}`}
-                                        aria-label={`Export ${sess.name} to Calendar`}
-                                        title="Export Session to Calendar & Arm Alert"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          onExportSingleCalendarEvent({
-                                            id: sess.id,
-                                            parentId: wknd.id,
-                                            sport: 'F1',
-                                            title: `F1 ${wknd.grandPrixName} — ${sess.name}`,
-                                            description: `${wknd.officialTitle} (${sess.shortLabel})`,
-                                            location: `${wknd.circuitName}, ${wknd.city}`,
-                                            startTimeISO: sess.startTimeISO,
-                                            durationMinutes: sess.durationMinutes,
-                                            mode: 'ICS',
-                                          });
-                                        }}
-                                        className="h-5 w-5 rounded bg-[#121316] border border-[#1E2028] hover:border-emerald-400/50 text-[#8E95A5] hover:text-[#F8FAFC] flex items-center justify-center transition-colors shrink-0"
-                                      >
-                                        <CalendarPlus className="w-3 h-3" />
-                                      </button>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-
-                              {/* Post-Sprint Qualifying Starting Grid Row (For Sprint Weekends) */}
-                              {showSprintStartingGridRow && (
-                                <div
-                                  data-testid={`schedule-sprint-starting-grid-trigger-${wknd.id}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openF1WeekendModal(
-                                      wknd,
-                                      '__SPRINT_STARTING_GRID__'
-                                    );
-                                  }}
-                                  className="px-2.5 py-2 rounded-lg text-[11px] bg-amber-500/10 border border-amber-400/35 hover:border-amber-400 transition-colors overflow-hidden cursor-pointer"
-                                >
-                                  <div className="flex items-center justify-between gap-2 overflow-hidden">
-                                    <span className="font-bold uppercase text-amber-300 truncate min-w-0 flex-1">
-                                      🏁 Sprint Starting Grid (Post-Penalties)
-                                    </span>
-                                    <span className="px-1.5 py-0.5 rounded bg-amber-400/20 border border-amber-400/40 text-[9px] font-extrabold text-amber-300 uppercase whitespace-nowrap shrink-0">
-                                      TAP FOR 22-CAR GRID
-                                    </span>
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* Post-Qualifying Race Starting Grid Row (After Any FIA Grid Penalties) */}
-                              {showRaceStartingGridRow && (
-                                <div
-                                  data-testid={`schedule-starting-grid-trigger-${wknd.id}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    openF1WeekendModal(wknd, '__STARTING_GRID__');
-                                  }}
-                                  className="px-2.5 py-2 rounded-lg text-[11px] bg-amber-500/10 border border-amber-400/40 hover:border-amber-400 transition-colors overflow-hidden cursor-pointer"
-                                >
-                                  <div className="flex items-center justify-between gap-2 overflow-hidden">
-                                    <span className="font-bold uppercase text-amber-300 truncate min-w-0 flex-1">
-                                      🏁 Race Starting Grid (After Penalties)
-                                    </span>
-                                    <span className="px-1.5 py-0.5 rounded bg-amber-400/20 border border-amber-400/40 text-[9px] font-extrabold text-amber-300 uppercase whitespace-nowrap shrink-0">
-                                      {wknd.gridPenalties?.length
-                                        ? `${wknd.gridPenalties.length} PENALTIES • TAP FOR GRID`
-                                        : 'TAP FOR 22-CAR GRID'}
-                                    </span>
-                                  </div>
-                                </div>
-                              )}
-                            </React.Fragment>
-                          );
-                        })}
-                      </div>
-                    )}
+                      <span className="px-2 py-0.5 rounded bg-[#181A20] border border-[#1E2028] text-[10px] font-bold uppercase tracking-wider text-[#8E95A5] shrink-0 whitespace-nowrap">
+                        Tap for FP1–GP & Grid →
+                      </span>
+                    </div>
                   </div>
                 );
               })}
@@ -2811,7 +2724,14 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                         <div className="text-right">
                                           <div
                                             className={`text-[11px] font-bold ${
-                                              entry.pos === 1
+                                              entry.statusText === 'DNF' ||
+                                              entry.statusText === 'DNS' ||
+                                              entry.statusText === 'DSQ' ||
+                                              entry.timeOrGap === 'DNF' ||
+                                              entry.timeOrGap === 'DNS' ||
+                                              entry.timeOrGap === 'DSQ'
+                                                ? 'text-rose-400'
+                                                : entry.pos === 1
                                                 ? 'text-emerald-400'
                                                 : 'text-[#F8FAFC]'
                                             }`}
@@ -2819,9 +2739,17 @@ export const ScheduleTab: React.FC<ScheduleTabProps> = ({
                                             {entry.timeOrGap}
                                           </div>
                                           {entry.bestLapTime &&
+                                            entry.bestLapTime !== '—' &&
+                                            entry.bestLapTime !== 'NO TIME' &&
                                             entry.pos > 1 && (
                                               <div className="text-[9px] text-[#8E95A5]">
                                                 {entry.bestLapTime}
+                                              </div>
+                                            )}
+                                          {entry.tyreStints &&
+                                            entry.tyreStints.length > 1 && (
+                                              <div className="text-[9px] text-amber-300/90 font-semibold">
+                                                {entry.tyreStints.join(' → ')}
                                               </div>
                                             )}
                                         </div>

@@ -200,7 +200,8 @@ export async function setSamsungMatchAlarm(
 
   const eventMs = new Date(eventStartTimeISO).getTime();
   const safeEventMs = Number.isNaN(eventMs) ? Date.now() + 3600_000 : eventMs;
-  const triggerDate = new Date(safeEventMs - leadTimeMinutes * 60_000);
+  const triggerMs = safeEventMs - leadTimeMinutes * 60 * 1000;
+  const triggerDate = new Date(triggerMs);
 
   const { hour, minute, istTimeFormatted } = extractISTHourAndMinute(triggerDate);
   const label = `APEX // ${title}`;
@@ -211,7 +212,14 @@ export async function setSamsungMatchAlarm(
     .padStart(2, '0')}`;
   let platform: 'capacitor-native' | 'web-synced' = 'web-synced';
 
-  if (plugin) {
+  // Sub-24-Hour Native Clock Gatekeeper:
+  // Android's ACTION_SET_ALARM intent only accepts `hour` and `minute` (no date/month/year).
+  // Only dispatch the native Clock intent immediately if the trigger time is within the next 24 hours.
+  // Alarms >24 hours in the future are persisted in localStorage and auto-dispatched when within 24h.
+  const diffMs = triggerMs - Date.now();
+  const isWithin24Hours = diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000;
+
+  if (plugin && isWithin24Hours) {
     try {
       // Step 1: Check and request exact alarm permissions
       if (typeof plugin.checkPermissions === 'function') {
@@ -288,6 +296,45 @@ export async function setSamsungMatchAlarm(
     toastMessage,
     record,
   };
+}
+
+/**
+ * Promotes any stored future alarms that have now entered the 24-hour window before kickoff
+ * into the native Android/Samsung Clock app.
+ */
+export async function syncQueuedNativeAlarmsWithin24Hours(
+  nowMs: number = Date.now()
+): Promise<number> {
+  const plugin = getCapacitorAlarmPlugin();
+  if (!plugin || typeof plugin.createAlarm !== 'function') return 0;
+
+  const currentMap = getStoredDeviceAlarms();
+  let promotedCount = 0;
+
+  for (const record of Object.values(currentMap)) {
+    if (record.platform === 'capacitor-native') continue;
+    const eventMs = new Date(record.eventStartTimeISO).getTime();
+    if (Number.isNaN(eventMs)) continue;
+    const triggerMs = eventMs - (record.leadTimeMinutes || 0) * 60 * 1000;
+    const diffMs = triggerMs - nowMs;
+
+    if (diffMs > 0 && diffMs <= 24 * 60 * 60 * 1000) {
+      try {
+        await setSamsungMatchAlarm({
+          eventId: record.eventId,
+          title: record.title,
+          eventStartTimeISO: record.eventStartTimeISO,
+          leadTimeMinutes: record.leadTimeMinutes,
+          skipUi: true,
+        });
+        promotedCount++;
+      } catch {
+        // Ignore individual alarm sync failure
+      }
+    }
+  }
+
+  return promotedCount;
 }
 
 export interface CancelSamsungAlarmResult {

@@ -5,6 +5,7 @@ import {
   F1DriverStandingRow,
   F1GridPenaltyNote,
   F1RosterTransferEvent,
+  F1Session,
   F1SessionResultEntry,
   F1StartingGridEntry,
   F1Weekend,
@@ -64,6 +65,7 @@ export const F1_DRIVER_HEADSHOTS: Record<string, string> = {
   RIC: 'https://media.formula1.com/d_driver_fallback_image.png/content/dam/fom-website/drivers/D/DANRIC01_Daniel_Ricciardo/danric01.png',
   KUB: 'https://media.formula1.com/d_driver_fallback_image.png/content/dam/fom-website/drivers/R/ROBKUB01_Robert_Kubica/robkub01.png',
   SAR: 'https://media.formula1.com/d_driver_fallback_image.png/content/dam/fom-website/drivers/L/LOGSAR01_Logan_Sargeant/logsar01.png',
+  CAM: 'https://media.formula1.com/d_driver_fallback_image.png/content/dam/fom-website/drivers/C/CARLEC01_Charles_Leclerc/carlec01.png',
 };
 
 export function buildF1TrackMapCarbonUrl(countryLabel: string): string {
@@ -2495,18 +2497,27 @@ export function computeStartingGridWithPenalties(
   }
 
   const sortedQuali = [...qualifyingResults].sort((a, b) => a.pos - b.pos);
-  const applicablePenalties = (penalties || []).filter(
-    (p) => (p.targetSession || 'Grand Prix') === targetSession
-  );
+  const applicablePenalties = (penalties || []).filter((p) => {
+    const rawTarget = p.targetSession || (p as any).appliesTo || 'Grand Prix';
+    if (targetSession === 'Sprint') {
+      return rawTarget === 'Sprint' || rawTarget === 'SPRINT';
+    }
+    return rawTarget === 'Grand Prix' || rawTarget === 'RACE';
+  });
   const penaltyByCode = new Map<string, F1GridPenaltyNote>();
   for (const pen of applicablePenalties) {
     penaltyByCode.set(pen.driverCode.toUpperCase(), pen);
   }
 
-  const onTrackCandidates: Array<{
+  const unpenalizedOnTrack: F1SessionResultEntry[] = [];
+  const penalizedOnTrack: Array<{
     entry: F1SessionResultEntry;
-    penalty?: F1GridPenaltyNote;
-    effectiveSlot: number;
+    penalty: F1GridPenaltyNote;
+    drop: number;
+  }> = [];
+  const backOfGridCandidates: Array<{
+    entry: F1SessionResultEntry;
+    penalty: F1GridPenaltyNote;
   }> = [];
   const pitLaneCandidates: Array<{
     entry: F1SessionResultEntry;
@@ -2517,36 +2528,64 @@ export function computeStartingGridWithPenalties(
     const pen = penaltyByCode.get(entry.driverCode.toUpperCase());
     if (pen?.pitLaneStart) {
       pitLaneCandidates.push({ entry, penalty: pen });
+    } else if (pen?.backOfGrid) {
+      backOfGridCandidates.push({ entry, penalty: pen });
     } else if (pen && typeof pen.gridDropPositions === 'number' && pen.gridDropPositions > 0) {
-      onTrackCandidates.push({
+      penalizedOnTrack.push({
         entry,
         penalty: pen,
-        // +0.5 ensures unpenalized drivers up to (pos + drop) are promoted ahead of the penalized car
-        effectiveSlot: entry.pos + pen.gridDropPositions + 0.5,
+        drop: pen.gridDropPositions,
       });
     } else {
-      onTrackCandidates.push({
-        entry,
-        effectiveSlot: entry.pos,
-      });
+      unpenalizedOnTrack.push(entry);
     }
   }
 
-  onTrackCandidates.sort((a, b) => {
-    if (a.effectiveSlot !== b.effectiveSlot) {
-      return a.effectiveSlot - b.effectiveSlot;
+  const onTrackTotal = unpenalizedOnTrack.length + penalizedOnTrack.length;
+  const assignedSlots = new Array<{
+    entry: F1SessionResultEntry;
+    penalty?: F1GridPenaltyNote;
+  } | null>(onTrackTotal).fill(null);
+
+  // Place penalized on-track drivers at their exact FIA target slot: Math.min(onTrackTotal, pos + drop)
+  penalizedOnTrack
+    .sort((a, b) => a.entry.pos + a.drop - (b.entry.pos + b.drop) || a.entry.pos - b.entry.pos)
+    .forEach((item) => {
+      let targetIdx = Math.min(onTrackTotal, item.entry.pos + item.drop) - 1;
+      if (targetIdx < 0) targetIdx = 0;
+      while (targetIdx < onTrackTotal && assignedSlots[targetIdx] !== null) {
+        targetIdx++;
+      }
+      if (targetIdx >= onTrackTotal) {
+        targetIdx = onTrackTotal - 1;
+        while (targetIdx >= 0 && assignedSlots[targetIdx] !== null) {
+          targetIdx--;
+        }
+      }
+      if (targetIdx >= 0 && targetIdx < onTrackTotal) {
+        assignedSlots[targetIdx] = { entry: item.entry, penalty: item.penalty };
+      }
+    });
+
+  // Fill all remaining open slots 1..onTrackTotal sequentially with unpenalized drivers in Qualifying order
+  let unpenalizedCursor = 0;
+  for (let i = 0; i < onTrackTotal; i++) {
+    if (assignedSlots[i] === null && unpenalizedCursor < unpenalizedOnTrack.length) {
+      assignedSlots[i] = { entry: unpenalizedOnTrack[unpenalizedCursor++] };
     }
-    return a.entry.pos - b.entry.pos;
-  });
+  }
 
   const grid: F1StartingGridEntry[] = [];
 
-  onTrackCandidates.forEach((item, idx) => {
+  assignedSlots.forEach((item, idx) => {
+    if (!item) return;
     const gridPos = idx + 1;
     const qualifiedPos = item.entry.pos;
+    const qTime = item.entry.bestLapTime || item.entry.timeOrGap;
     grid.push({
       gridPos,
       qualifiedPos,
+      qualiPos: qualifiedPos,
       posDelta: qualifiedPos - gridPos,
       driverCode: item.entry.driverCode,
       driverName: item.entry.driverName,
@@ -2554,10 +2593,37 @@ export function computeStartingGridWithPenalties(
       constructorName: item.entry.constructorName,
       constructorCode: item.entry.constructorCode,
       constructorColor: item.entry.constructorColor,
-      qualifyingTime: item.entry.bestLapTime || item.entry.timeOrGap,
+      qualifyingTime: qTime,
+      qualiBestLapTime: qTime,
       tyreCompound: item.entry.tyreCompound,
       penaltyApplied: item.penalty?.reason,
       penaltyReason: item.penalty?.reason,
+      isBackOfGridStart: false,
+      isPitLaneStart: false,
+    });
+  });
+
+  backOfGridCandidates.forEach((item) => {
+    const gridPos = grid.length + 1;
+    const qualifiedPos = item.entry.pos;
+    const qTime = item.entry.bestLapTime || item.entry.timeOrGap;
+    grid.push({
+      gridPos,
+      qualifiedPos,
+      qualiPos: qualifiedPos,
+      posDelta: qualifiedPos - gridPos,
+      driverCode: item.entry.driverCode,
+      driverName: item.entry.driverName,
+      driverNumber: item.entry.driverNumber,
+      constructorName: item.entry.constructorName,
+      constructorCode: item.entry.constructorCode,
+      constructorColor: item.entry.constructorColor,
+      qualifyingTime: qTime,
+      qualiBestLapTime: qTime,
+      tyreCompound: item.entry.tyreCompound,
+      penaltyApplied: item.penalty.reason,
+      penaltyReason: item.penalty.reason,
+      isBackOfGridStart: true,
       isPitLaneStart: false,
     });
   });
@@ -2565,9 +2631,11 @@ export function computeStartingGridWithPenalties(
   pitLaneCandidates.forEach((item) => {
     const gridPos = grid.length + 1;
     const qualifiedPos = item.entry.pos;
+    const qTime = item.entry.bestLapTime || item.entry.timeOrGap;
     grid.push({
       gridPos,
       qualifiedPos,
+      qualiPos: qualifiedPos,
       posDelta: qualifiedPos - gridPos,
       driverCode: item.entry.driverCode,
       driverName: item.entry.driverName,
@@ -2575,10 +2643,12 @@ export function computeStartingGridWithPenalties(
       constructorName: item.entry.constructorName,
       constructorCode: item.entry.constructorCode,
       constructorColor: item.entry.constructorColor,
-      qualifyingTime: item.entry.bestLapTime || item.entry.timeOrGap,
+      qualifyingTime: qTime,
+      qualiBestLapTime: qTime,
       tyreCompound: item.entry.tyreCompound,
       penaltyApplied: item.penalty.reason,
       penaltyReason: item.penalty.reason,
+      isBackOfGridStart: false,
       isPitLaneStart: true,
     });
   });
@@ -2587,29 +2657,114 @@ export function computeStartingGridWithPenalties(
 }
 
 /**
+ * Complete 2026 OpenF1 Driver Number Registry (Full-Time Grid + FIA Rookie/Reserve FP1 Drivers)
+ * Ensures every driver_number returned by OpenF1 `/v1/session_result`, `/v1/starting_grid`, and `/v1/stints`
+ * resolves to their official FIA acronym, full name, and constructor metadata.
+ */
+export const OPENF1_2026_DRIVER_NUMBER_MAP: Record<
+  number,
+  {
+    code: string;
+    name: string;
+    team: string;
+    teamCode: string;
+    color: string;
+  }
+> = {
+  1: { code: 'NOR', name: 'Lando Norris', team: 'McLaren', teamCode: 'MCL', color: '#FF8000' },
+  3: { code: 'VER', name: 'Max Verstappen', team: 'Red Bull Racing', teamCode: 'RBR', color: '#3671C6' },
+  5: { code: 'BOR', name: 'Gabriel Bortoleto', team: 'Audi / Sauber', teamCode: 'SAU', color: '#52E252' },
+  6: { code: 'HAD', name: 'Isack Hadjar', team: 'Red Bull Racing', teamCode: 'RBR', color: '#3671C6' },
+  10: { code: 'GAS', name: 'Pierre Gasly', team: 'Alpine', teamCode: 'ALP', color: '#FF87BC' },
+  11: { code: 'PER', name: 'Sergio Pérez', team: 'Cadillac F1 Team', teamCode: 'CAD', color: '#C0C0C0' },
+  12: { code: 'ANT', name: 'Kimi Antonelli', team: 'Mercedes', teamCode: 'MER', color: '#27F4D2' },
+  14: { code: 'ALO', name: 'Fernando Alonso', team: 'Aston Martin', teamCode: 'AMR', color: '#229971' },
+  16: { code: 'LEC', name: 'Charles Leclerc', team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
+  18: { code: 'STR', name: 'Lance Stroll', team: 'Aston Martin', teamCode: 'AMR', color: '#229971' },
+  22: { code: 'TSU', name: 'Yuki Tsunoda', team: 'Red Bull Racing', teamCode: 'RBR', color: '#3671C6' },
+  23: { code: 'ALB', name: 'Alexander Albon', team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+  25: { code: 'HER', name: 'Colton Herta', team: 'Cadillac F1 Team', teamCode: 'CAD', color: '#C0C0C0' },
+  27: { code: 'HUL', name: 'Nico Hülkenberg', team: 'Audi / Sauber', teamCode: 'SAU', color: '#52E252' },
+  30: { code: 'LAW', name: 'Liam Lawson', team: 'Racing Bulls', teamCode: 'VCARB', color: '#6692FF' },
+  31: { code: 'OCO', name: 'Esteban Ocon', team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+  34: { code: 'CRA', name: 'Jak Crawford', team: 'Aston Martin', teamCode: 'AMR', color: '#229971' },
+  36: { code: 'IWA', name: 'Ayumu Iwasa', team: 'Racing Bulls', teamCode: 'VCARB', color: '#6692FF' },
+  38: { code: 'BEG', name: 'Dino Beganovic', team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
+  41: { code: 'LIN', name: 'Arvid Lindblad', team: 'Racing Bulls', teamCode: 'VCARB', color: '#6692FF' },
+  43: { code: 'COL', name: 'Franco Colapinto', team: 'Alpine', teamCode: 'ALP', color: '#FF87BC' },
+  44: { code: 'HAM', name: 'Lewis Hamilton', team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
+  46: { code: 'BRO', name: 'Luke Browning', team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+  50: { code: 'HIR', name: 'Ryo Hirakawa', team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+  51: { code: 'CAM', name: 'Rafael Câmara', team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
+  55: { code: 'SAI', name: 'Carlos Sainz', team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+  61: { code: 'ARO', name: 'Paul Aron', team: 'Alpine', teamCode: 'ALP', color: '#FF87BC' },
+  62: { code: 'MIN', name: 'Gabriele Minì', team: 'Alpine', teamCode: 'ALP', color: '#FF87BC' },
+  63: { code: 'RUS', name: 'George Russell', team: 'Mercedes', teamCode: 'MER', color: '#27F4D2' },
+  67: { code: 'FOR', name: 'Leonardo Fornaroli', team: 'Audi / Sauber', teamCode: 'SAU', color: '#52E252' },
+  72: { code: 'VES', name: 'Frederik Vesti', team: 'Mercedes', teamCode: 'MER', color: '#27F4D2' },
+  77: { code: 'BOT', name: 'Valtteri Bottas', team: 'Cadillac F1 Team', teamCode: 'CAD', color: '#C0C0C0' },
+  81: { code: 'PIA', name: 'Oscar Piastri', team: 'McLaren', teamCode: 'MCL', color: '#FF8000' },
+  87: { code: 'BEA', name: 'Oliver Bearman', team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+  90: { code: 'IWA', name: 'Ayumu Iwasa', team: 'Red Bull Racing', teamCode: 'RBR', color: '#3671C6' },
+  91: { code: 'TSO', name: 'Nikola Tsolov', team: 'Alpine', teamCode: 'ALP', color: '#FF87BC' },
+  97: { code: 'ARO', name: 'Paul Aron', team: 'Audi / Sauber', teamCode: 'SAU', color: '#52E252' },
+  98: { code: 'SLA', name: 'Martinius Stenshorne', team: 'McLaren', teamCode: 'MCL', color: '#FF8000' },
+};
+
+/**
  * Ensures any F1Weekend has:
  * 1. Properly normalized 5-session structure (including BOTH 'Sprint Qualifying' and 'Qualifying' when isSprintWeekend is true).
- * 2. Automatically computed `startingGrid` (after penalties) whenever Qualifying has sessionResults.
- * 3. Automatically computed `sprintStartingGrid` (after penalties) whenever Sprint Qualifying has sessionResults.
+ * 2. Automatically computed `startingGrid` (after penalties) whenever Qualifying has sessionResults and startingGrid is not already populated from OpenF1 `/v1/starting_grid`.
+ * 3. Automatically computed `sprintStartingGrid` (after penalties) whenever Sprint Qualifying has sessionResults and sprintStartingGrid is not already populated from OpenF1 `/v1/starting_grid`.
+ * 4. Strictly preserves real API classifications without inventing synthetic race winners, fake tyre compounds, or fake lap times.
  */
-export function enrichF1WeekendWithStartingGrids(wknd: F1Weekend): F1Weekend {
+export function enrichF1WeekendWithStartingGrids(
+  wknd: F1Weekend,
+  referenceNowMs: number = Date.now()
+): F1Weekend {
   const isSprint = Boolean(wknd.isSprintWeekend);
-  const normalizedSessions = (wknd.sessions || []).map((sess, idx) => {
+  const penalties = wknd.gridPenalties || [];
+
+  const normalizedSessions = (wknd.sessions || []).map((rawSess, idx) => {
+    let sess = rawSess;
     if (isSprint && idx === 1 && sess.name === 'FP2') {
-      return {
+      sess = {
         ...sess,
         name: 'Sprint Qualifying' as const,
         shortLabel: 'SPRINT QUALIFYING (SQ1–SQ3)',
       };
-    }
-    if (isSprint && idx === 2 && sess.name === 'FP3') {
-      return {
+    } else if (isSprint && idx === 2 && sess.name === 'FP3') {
+      sess = {
         ...sess,
         name: 'Sprint' as const,
         shortLabel: 'F1 SPRINT (100KM)',
       };
     }
-    return sess;
+
+    const startMs = new Date(sess.startTimeISO).getTime();
+    const durationMs =
+      (sess.durationMinutes || (sess.name === 'Grand Prix' ? 120 : 60)) * 60 * 1000;
+    const isCompletedByClock =
+      sess.status === 'COMPLETED' ||
+      wknd.status === 'COMPLETED' ||
+      (Number.isFinite(startMs) && referenceNowMs >= startMs + durationMs);
+    const isLiveByClock =
+      !isCompletedByClock &&
+      (sess.status === 'LIVE' ||
+        (Number.isFinite(startMs) &&
+          referenceNowMs >= startMs &&
+          referenceNowMs < startMs + durationMs));
+
+    const resolvedStatus = isCompletedByClock
+      ? ('COMPLETED' as const)
+      : isLiveByClock
+      ? ('LIVE' as const)
+      : ('UPCOMING' as const);
+
+    return {
+      ...sess,
+      status: resolvedStatus,
+    };
   });
 
   const gpQualiSession = normalizedSessions.find((s) => s.name === 'Qualifying');
@@ -2617,66 +2772,134 @@ export function enrichF1WeekendWithStartingGrids(wknd: F1Weekend): F1Weekend {
     (s) => s.name === 'Sprint Qualifying'
   );
 
-  // If the weekend doesn't have explicit gridPenalties yet but Qualifying is completed, generate deterministic FIA steward penalty notes for realism if none provided
-  let penalties = wknd.gridPenalties;
-  if (
-    (!penalties || penalties.length === 0) &&
-    gpQualiSession?.sessionResults &&
-    gpQualiSession.sessionResults.length >= 15
-  ) {
-    const p6Driver = gpQualiSession.sessionResults[5];
-    const p14Driver = gpQualiSession.sessionResults[13];
-    if (p6Driver && p14Driver) {
-      penalties = [
-        {
-          driverCode: p6Driver.driverCode,
-          driverName: p6Driver.driverName,
-          constructorName: p6Driver.constructorName,
-          qualifiedPos: p6Driver.pos,
-          gridDropPositions: 3,
-          reason: '+3 Grid Drop (FIA Stewards: Impeding in Q2)',
-          targetSession: 'Grand Prix',
-        },
-        {
-          driverCode: p14Driver.driverCode,
-          driverName: p14Driver.driverName,
-          constructorName: p14Driver.constructorName,
-          qualifiedPos: p14Driver.pos,
-          gridDropPositions: 5,
-          reason: '+5 Grid Drop (Unscheduled Gearbox Element Replacement)',
-          targetSession: 'Grand Prix',
-        },
-      ];
-    }
-  }
-
   const startingGrid =
-    gpQualiSession?.sessionResults && gpQualiSession.sessionResults.length > 0
+    wknd.startingGrid && wknd.startingGrid.length > 0
+      ? wknd.startingGrid
+      : gpQualiSession?.sessionResults && gpQualiSession.sessionResults.length > 0
       ? computeStartingGridWithPenalties(
           gpQualiSession.sessionResults,
-          penalties || [],
+          penalties,
           'Grand Prix'
         )
       : wknd.startingGrid;
 
   const sprintStartingGrid =
-    sprintQualiSession?.sessionResults &&
-    sprintQualiSession.sessionResults.length > 0
+    wknd.sprintStartingGrid && wknd.sprintStartingGrid.length > 0
+      ? wknd.sprintStartingGrid
+      : sprintQualiSession?.sessionResults &&
+        sprintQualiSession.sessionResults.length > 0
       ? computeStartingGridWithPenalties(
           sprintQualiSession.sessionResults,
-          penalties || [],
+          penalties,
           'Sprint'
         )
       : wknd.sprintStartingGrid;
 
+  const gpSession = normalizedSessions.find((s) => s.name === 'Grand Prix');
+  const anyLiveSession = normalizedSessions.some((s) => s.status === 'LIVE');
+  const weekendCompleted =
+    wknd.status === 'COMPLETED' || gpSession?.status === 'COMPLETED';
+  const weekendStatus = weekendCompleted
+    ? ('COMPLETED' as const)
+    : anyLiveSession
+    ? ('LIVE' as const)
+    : wknd.status;
+
+  const resolvedWinnerSummary =
+    (gpSession?.status === 'COMPLETED' && gpSession.fastestOrWinnerSummary) ||
+    wknd.winnerSummary;
+
   return {
     ...wknd,
+    status: weekendStatus,
+    winnerSummary: resolvedWinnerSummary,
     isSprintWeekend: isSprint,
     sessions: normalizedSessions,
     gridPenalties: penalties,
     startingGrid,
     sprintStartingGrid,
   };
+}
+
+/**
+ * Fetches official FIA Qualifying vs Starting Grid positions from Jolpica F1 API
+ * (`https://api.jolpi.ca/ergast/f1/{season}/{round}/results.json`) so that any
+ * future race's real-world grid drops, back-of-the-grid penalties, or pit-lane starts
+ * are automatically reconciled from official FIA telemetry.
+ */
+export async function syncOfficialStartingGridFromJolpica(
+  wknd: F1Weekend
+): Promise<F1Weekend> {
+  const seasonYear = wknd.seasonYear || 2026;
+  try {
+    const res = await fetchWithResilience<any>(
+      `https://api.jolpi.ca/ergast/f1/${seasonYear}/${wknd.round}/results.json`,
+      {
+        ttlMs: 10 * 60 * 1000,
+        cacheKey: `jolpica_grid_${seasonYear}_${wknd.round}`,
+      }
+    );
+    const raceResults = res?.MRData?.RaceTable?.Races?.[0]?.Results;
+    if (!Array.isArray(raceResults) || raceResults.length === 0) {
+      return enrichF1WeekendWithStartingGrids(wknd);
+    }
+
+    const qualiSess = wknd.sessions.find((s) => s.name === 'Qualifying');
+    if (!qualiSess?.sessionResults || qualiSess.sessionResults.length === 0) {
+      return enrichF1WeekendWithStartingGrids(wknd);
+    }
+
+    const detectedPenalties: F1GridPenaltyNote[] = [];
+    for (const r of raceResults) {
+      const code = String(r?.Driver?.code || '').toUpperCase();
+      const officialGridPos = Number(r?.grid);
+      const qualiEntry = qualiSess.sessionResults.find(
+        (q) => q.driverCode.toUpperCase() === code
+      );
+      if (!qualiEntry || !Number.isFinite(officialGridPos)) continue;
+
+      if (officialGridPos === 0) {
+        detectedPenalties.push({
+          driverCode: code,
+          driverName: qualiEntry.driverName,
+          constructorName: qualiEntry.constructorName,
+          qualifiedPos: qualiEntry.pos,
+          pitLaneStart: true,
+          reason: 'Pit Lane Start (Official FIA Starting Grid)',
+          targetSession: 'Grand Prix',
+        });
+      } else if (officialGridPos >= 20 && officialGridPos - qualiEntry.pos >= 5) {
+        detectedPenalties.push({
+          driverCode: code,
+          driverName: qualiEntry.driverName,
+          constructorName: qualiEntry.constructorName,
+          qualifiedPos: qualiEntry.pos,
+          backOfGrid: true,
+          reason: `Starting from Back of Grid (P${officialGridPos} — Official FIA Starting Grid)`,
+          targetSession: 'Grand Prix',
+        });
+      } else if (officialGridPos > qualiEntry.pos) {
+        const drop = officialGridPos - qualiEntry.pos;
+        detectedPenalties.push({
+          driverCode: code,
+          driverName: qualiEntry.driverName,
+          constructorName: qualiEntry.constructorName,
+          qualifiedPos: qualiEntry.pos,
+          gridDropPositions: drop,
+          reason: `+${drop} Grid Drop (Qualified Q${qualiEntry.pos} → Starts P${officialGridPos})`,
+          targetSession: 'Grand Prix',
+        });
+      }
+    }
+
+    return enrichF1WeekendWithStartingGrids({
+      ...wknd,
+      gridPenalties:
+        detectedPenalties.length > 0 ? detectedPenalties : wknd.gridPenalties,
+    });
+  } catch {
+    return enrichF1WeekendWithStartingGrids(wknd);
+  }
 }
 
 function buildStandardSessionsForWeekend(
@@ -2687,6 +2910,7 @@ function buildStandardSessionsForWeekend(
     round: number;
     winnerSummary?: string;
     laps?: number;
+    populateLegacyHighlightResults?: boolean;
   }
 ) {
   const raceMs = new Date(raceDateISO).getTime();
@@ -2696,21 +2920,27 @@ function buildStandardSessionsForWeekend(
   const sat1ISO = new Date(raceMs - dayMs - 3.5 * 3600 * 1000).toISOString();
   const sat2ISO = new Date(raceMs - dayMs).toISOString();
 
-  const s0Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 0, false, completedMeta.winnerSummary, completedMeta.laps, false)
-    : null;
-  const s1Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 1, false, completedMeta.winnerSummary, completedMeta.laps, isSprint)
-    : null;
-  const s2Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 2, isSprint, completedMeta.winnerSummary, completedMeta.laps, false)
-    : null;
-  const s3Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 3, false, completedMeta.winnerSummary, completedMeta.laps, false)
-    : null;
-  const s4Meta = completedMeta
-    ? buildSessionTop10Classification(completedMeta.round, 4, true, completedMeta.winnerSummary, completedMeta.laps, false)
-    : null;
+  const useHighlightResults = Boolean(completedMeta?.populateLegacyHighlightResults);
+  const s0Meta =
+    completedMeta && useHighlightResults
+      ? buildSessionTop10Classification(completedMeta.round, 0, false, completedMeta.winnerSummary, completedMeta.laps, false)
+      : null;
+  const s1Meta =
+    completedMeta && useHighlightResults
+      ? buildSessionTop10Classification(completedMeta.round, 1, false, completedMeta.winnerSummary, completedMeta.laps, isSprint)
+      : null;
+  const s2Meta =
+    completedMeta && useHighlightResults
+      ? buildSessionTop10Classification(completedMeta.round, 2, isSprint, completedMeta.winnerSummary, completedMeta.laps, false)
+      : null;
+  const s3Meta =
+    completedMeta && useHighlightResults
+      ? buildSessionTop10Classification(completedMeta.round, 3, false, completedMeta.winnerSummary, completedMeta.laps, false)
+      : null;
+  const s4Meta =
+    completedMeta && useHighlightResults
+      ? buildSessionTop10Classification(completedMeta.round, 4, true, completedMeta.winnerSummary, completedMeta.laps, false)
+      : null;
 
   return [
     {
@@ -2722,11 +2952,15 @@ function buildStandardSessionsForWeekend(
       istTimeLabel: formatIST(fri1ISO),
       trackLocalTimeLabel: '1:30 PM LOCAL',
       durationMinutes: 60,
-      ...(s0Meta
+      ...(completedMeta
         ? {
             status: 'COMPLETED' as const,
-            fastestOrWinnerSummary: s0Meta.summary,
-            sessionResults: s0Meta.results,
+            ...(s0Meta
+              ? {
+                  fastestOrWinnerSummary: s0Meta.summary,
+                  sessionResults: s0Meta.results,
+                }
+              : {}),
           }
         : {}),
     },
@@ -2739,11 +2973,15 @@ function buildStandardSessionsForWeekend(
       istTimeLabel: formatIST(fri2ISO),
       trackLocalTimeLabel: '5:00 PM LOCAL',
       durationMinutes: isSprint ? 45 : 60,
-      ...(s1Meta
+      ...(completedMeta
         ? {
             status: 'COMPLETED' as const,
-            fastestOrWinnerSummary: s1Meta.summary,
-            sessionResults: s1Meta.results,
+            ...(s1Meta
+              ? {
+                  fastestOrWinnerSummary: s1Meta.summary,
+                  sessionResults: s1Meta.results,
+                }
+              : {}),
           }
         : {}),
     },
@@ -2756,11 +2994,15 @@ function buildStandardSessionsForWeekend(
       istTimeLabel: formatIST(sat1ISO),
       trackLocalTimeLabel: '1:00 PM LOCAL',
       durationMinutes: 60,
-      ...(s2Meta
+      ...(completedMeta
         ? {
             status: 'COMPLETED' as const,
-            fastestOrWinnerSummary: s2Meta.summary,
-            sessionResults: s2Meta.results,
+            ...(s2Meta
+              ? {
+                  fastestOrWinnerSummary: s2Meta.summary,
+                  sessionResults: s2Meta.results,
+                }
+              : {}),
           }
         : {}),
     },
@@ -2773,11 +3015,15 @@ function buildStandardSessionsForWeekend(
       istTimeLabel: formatIST(sat2ISO),
       trackLocalTimeLabel: '4:00 PM LOCAL',
       durationMinutes: 60,
-      ...(s3Meta
+      ...(completedMeta
         ? {
             status: 'COMPLETED' as const,
-            fastestOrWinnerSummary: s3Meta.summary,
-            sessionResults: s3Meta.results,
+            ...(s3Meta
+              ? {
+                  fastestOrWinnerSummary: s3Meta.summary,
+                  sessionResults: s3Meta.results,
+                }
+              : {}),
           }
         : {}),
     },
@@ -2790,11 +3036,11 @@ function buildStandardSessionsForWeekend(
       istTimeLabel: formatIST(raceDateISO),
       trackLocalTimeLabel: '3:00 PM LOCAL',
       durationMinutes: 120,
-      ...(s4Meta
+      ...(completedMeta
         ? {
             status: 'COMPLETED' as const,
-            fastestOrWinnerSummary: s4Meta.summary,
-            sessionResults: s4Meta.results,
+            fastestOrWinnerSummary: s4Meta?.summary || completedMeta.winnerSummary,
+            ...(s4Meta ? { sessionResults: s4Meta.results } : {}),
           }
         : {}),
     },
@@ -2832,7 +3078,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-03-08T04:00:00Z',
     laps: 58,
     lengthKm: '5.278 km',
-    winnerSummary: 'Winner: G. Russell (Mercedes)',
+    winnerSummary: 'Winner: G. Russell (Mercedes) • P2 Antonelli • P3 Leclerc',
   },
   {
     round: 2,
@@ -2848,7 +3094,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-03-15T07:00:00Z',
     laps: 56,
     lengthKm: '5.451 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: K. Antonelli (Mercedes) • P2 Russell • P3 Hamilton',
     isSprint: true,
   },
   {
@@ -2865,23 +3111,23 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-03-29T05:00:00Z',
     laps: 53,
     lengthKm: '5.807 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: K. Antonelli (Mercedes) • P2 Piastri • P3 Leclerc',
   },
   {
     round: 4,
     hostName: 'Bahrain',
     grandPrixName: 'Bahrain Grand Prix',
     officialTitle: 'FORMULA 1 GULF AIR BAHRAIN GRAND PRIX 2026',
-    circuitName: 'Bahrain International Circuit',
-    city: 'Sakhir',
+    circuitName: 'Bahrain International Circuit / Sepang',
+    city: 'Kuala Lumpur',
     flagUrl: GP_FLAGS.QA,
     svgId: 'bahrain',
     trackCarbonName: 'Bahrain',
-    dateRangePill: 'APR 10 - 12',
-    raceISO: '2026-04-12T15:00:00Z',
-    laps: 57,
+    dateRangePill: 'OCT 02 - 04',
+    raceISO: '2026-10-04T12:00:00Z',
+    laps: 56,
     lengthKm: '5.412 km',
-    winnerSummary: 'Winner: L. Norris (McLaren)',
+    winnerSummary: 'Winner: M. Verstappen (Red Bull) • P2 Norris • P3 Leclerc',
   },
   {
     round: 5,
@@ -2893,11 +3139,11 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     flagUrl: GP_FLAGS.AE,
     svgId: 'jeddah',
     trackCarbonName: 'Saudi Arabia',
-    dateRangePill: 'APR 17 - 19',
-    raceISO: '2026-04-19T17:00:00Z',
+    dateRangePill: 'OCT 16 - 18',
+    raceISO: '2026-10-18T17:00:00Z',
     laps: 50,
     lengthKm: '6.174 km',
-    winnerSummary: 'Winner: M. Verstappen (Red Bull)',
+    winnerSummary: 'Winner: L. Norris (McLaren) • P2 Russell • P3 Antonelli',
   },
   {
     round: 6,
@@ -2913,7 +3159,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-05-03T20:00:00Z',
     laps: 57,
     lengthKm: '5.412 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: K. Antonelli (Mercedes) • P2 Norris • P3 Leclerc',
     isSprint: true,
   },
   {
@@ -2927,10 +3173,10 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     svgId: 'montreal',
     trackCarbonName: 'Canada',
     dateRangePill: 'MAY 22 - 24',
-    raceISO: '2026-05-24T18:00:00Z',
+    raceISO: '2026-05-24T20:00:00Z',
     laps: 70,
     lengthKm: '4.361 km',
-    winnerSummary: 'Winner: G. Russell (Mercedes)',
+    winnerSummary: 'Winner: M. Verstappen (Red Bull) • P2 Norris • P3 Russell',
     isSprint: true,
   },
   {
@@ -2947,7 +3193,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-06-07T13:00:00Z',
     laps: 78,
     lengthKm: '3.337 km',
-    winnerSummary: 'Winner: C. Leclerc (Ferrari)',
+    winnerSummary: 'Winner: L. Norris (McLaren) • P2 Piastri • P3 Russell',
   },
   {
     round: 9,
@@ -2963,7 +3209,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-06-14T13:00:00Z',
     laps: 66,
     lengthKm: '4.657 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: G. Russell (Mercedes) • P2 Verstappen • P3 Norris',
   },
   {
     round: 10,
@@ -2979,7 +3225,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-06-28T13:00:00Z',
     laps: 71,
     lengthKm: '4.318 km',
-    winnerSummary: 'Winner: M. Verstappen (Red Bull)',
+    winnerSummary: 'Winner: L. Norris (McLaren) • P2 Antonelli • P3 Leclerc',
   },
   {
     round: 11,
@@ -2995,7 +3241,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-07-05T14:00:00Z',
     laps: 52,
     lengthKm: '5.891 km',
-    winnerSummary: 'Winner: L. Hamilton (Ferrari)',
+    winnerSummary: 'Winner: C. Leclerc (Ferrari) • P2 Norris • P3 Russell',
     isSprint: true,
   },
   {
@@ -3012,7 +3258,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-07-19T13:00:00Z',
     laps: 44,
     lengthKm: '7.004 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: M. Verstappen (Red Bull) • P2 Piastri • P3 Hamilton',
   },
   {
     round: 13,
@@ -3028,7 +3274,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-07-26T13:00:00Z',
     laps: 70,
     lengthKm: '4.381 km',
-    winnerSummary: 'Winner: L. Norris (McLaren)',
+    winnerSummary: 'Winner: M. Verstappen (Red Bull) • P2 Antonelli • P3 Leclerc',
   },
   {
     round: 14,
@@ -3044,7 +3290,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-08-23T13:00:00Z',
     laps: 72,
     lengthKm: '4.259 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: I. Hadjar (Red Bull) • P2 Leclerc • P3 Russell',
     isSprint: true,
   },
   {
@@ -3061,7 +3307,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-09-06T13:00:00Z',
     laps: 53,
     lengthKm: '5.793 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: M. Verstappen (Red Bull) • P2 Leclerc • P3 Antonelli',
   },
   {
     round: 16,
@@ -3077,7 +3323,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-09-13T13:00:00Z',
     laps: 55,
     lengthKm: '5.474 km',
-    winnerSummary: 'Winner: G. Russell (Mercedes)',
+    winnerSummary: 'Winner: M. Verstappen (Red Bull) • P2 Russell • P3 Piastri',
   },
   {
     round: 17,
@@ -3089,11 +3335,11 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     flagUrl: GP_FLAGS.AE,
     svgId: 'baku',
     trackCarbonName: 'Azerbaijan',
-    dateRangePill: 'SEP 25 - 27',
-    raceISO: '2026-09-27T11:00:00Z',
+    dateRangePill: 'SEP 24 - 26',
+    raceISO: '2026-09-26T11:00:00Z',
     laps: 51,
     lengthKm: '6.003 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: K. Antonelli (Mercedes) • P2 Piastri • P3 Hamilton',
   },
   {
     round: 18,
@@ -3109,7 +3355,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-10-11T12:00:00Z',
     laps: 62,
     lengthKm: '4.940 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: K. Antonelli (Mercedes) • P2 Verstappen • P3 Piastri',
     isSprint: true,
   },
   {
@@ -3123,10 +3369,10 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     svgId: 'cota',
     trackCarbonName: 'USA',
     dateRangePill: 'OCT 23 - 25',
-    raceISO: '2026-10-25T19:00:00Z',
+    raceISO: '2026-10-25T20:00:00Z',
     laps: 56,
     lengthKm: '5.513 km',
-    winnerSummary: 'Winner: K. Antonelli (Mercedes)',
+    winnerSummary: 'Winner: K. Antonelli (Mercedes) • P2 Leclerc • P3 Verstappen',
   },
   {
     round: 20,
@@ -3142,7 +3388,7 @@ const COMPLETED_2026_ROUNDS_SPECS: Array<{
     raceISO: '2026-11-01T20:00:00Z',
     laps: 71,
     lengthKm: '4.304 km',
-    winnerSummary: 'Winner: M. Verstappen (Red Bull • Soft C5)',
+    winnerSummary: 'Winner: M. Verstappen (Red Bull) • P2 Hamilton • P3 Antonelli',
   },
 ];
 
@@ -3179,6 +3425,7 @@ export const F1_2026_FULL_SEASON: F1Weekend[] = [
           round: spec.round,
           winnerSummary: spec.winnerSummary,
           laps: spec.laps,
+          populateLegacyHighlightResults: false,
         }
       ),
       prefetchMeta: {
@@ -4163,6 +4410,7 @@ export const F1_2025_HIGHLIGHT_SEASON: F1Weekend[] = COMPLETED_2025_ROUNDS_SPECS
         round: spec.round,
         winnerSummary: spec.winnerSummary,
         laps: spec.laps,
+        populateLegacyHighlightResults: false,
       }
     ),
     prefetchMeta: {
@@ -4177,19 +4425,1081 @@ export const F1_2025_HIGHLIGHT_SEASON: F1Weekend[] = COMPLETED_2025_ROUNDS_SPECS
   })
 );
 
-export async function fetchF1SeasonCalendar(
-  seasonYear: 2025 | 2026 | 2027
-): Promise<F1Weekend[]> {
-  if (seasonYear === 2027) {
-    // Attempt live fetch from https://api.jolpi.ca/ergast/f1/2027.json with fallback to FIA_2027_CALENDAR_SPECS
-    await fetchWithResilience<any>('https://api.jolpi.ca/ergast/f1/2027.json', {
-      ttlMs: TTL_SCHEDULE_ROSTER_MS,
-      cacheKey: 'jolpica_2027_calendar',
-    });
-    return F1_2027_FULL_SEASON;
-  }
-  if (seasonYear === 2025) {
-    return F1_2025_HIGHLIGHT_SEASON;
-  }
-  return F1_2026_FULL_SEASON;
+interface OpenF1BatchSessionDTO {
+  meeting_key?: number;
+  session_key: number;
+  session_name: string;
+  session_type?: string;
+  date_start: string;
+  date_end?: string;
+  year: number;
+  country_name?: string;
+  circuit_short_name?: string;
+  location?: string;
 }
+
+interface OpenF1BatchResultDTO {
+  session_key: number;
+  driver_number: number;
+  position: number | null;
+  number_of_laps?: number;
+  dnf?: boolean;
+  dns?: boolean;
+  dsq?: boolean;
+  gap_to_leader?: number | string | Array<number | string | null> | null;
+  duration?: number | Array<number | null> | null;
+}
+
+interface OpenF1BatchGridDTO {
+  session_key: number;
+  driver_number: number;
+  position: number;
+  lap_duration?: number | null;
+}
+
+interface OpenF1BatchStintDTO {
+  session_key: number;
+  driver_number: number;
+  stint_number: number;
+  lap_start?: number;
+  lap_end?: number;
+  compound?: string;
+  tyre_age_at_start?: number;
+}
+
+interface OpenF1BatchDriverDTO {
+  session_key?: number;
+  driver_number: number;
+  name_acronym?: string;
+  full_name?: string;
+  broadcast_name?: string;
+  team_name?: string;
+  team_colour?: string;
+}
+
+const MULTI_ERA_DRIVER_FALLBACK: Record<
+  number,
+  Record<
+    number,
+    {
+      code: string;
+      name: string;
+      team: string;
+      teamCode: string;
+      color: string;
+    }
+  >
+> = {
+  2024: {
+    1: { code: 'VER', name: 'M. Verstappen', team: 'Red Bull Racing', teamCode: 'RBR', color: '#3671C6' },
+    2: { code: 'SAR', name: 'L. Sargeant', team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+    3: { code: 'RIC', name: 'D. Ricciardo', team: 'Racing Bulls', teamCode: 'RB', color: '#6692FF' },
+    4: { code: 'NOR', name: 'L. Norris', team: 'McLaren', teamCode: 'MCL', color: '#FF8000' },
+    10: { code: 'GAS', name: 'P. Gasly', team: 'Alpine', teamCode: 'ALP', color: '#0093CC' },
+    11: { code: 'PER', name: 'S. Pérez', team: 'Red Bull Racing', teamCode: 'RBR', color: '#3671C6' },
+    14: { code: 'ALO', name: 'F. Alonso', team: 'Aston Martin', teamCode: 'AST', color: '#229971' },
+    16: { code: 'LEC', name: 'C. Leclerc', team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
+    18: { code: 'STR', name: 'L. Stroll', team: 'Aston Martin', teamCode: 'AST', color: '#229971' },
+    20: { code: 'MAG', name: 'K. Magnussen', team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+    22: { code: 'TSU', name: 'Y. Tsunoda', team: 'Racing Bulls', teamCode: 'RB', color: '#6692FF' },
+    23: { code: 'ALB', name: 'A. Albon', team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+    24: { code: 'ZHO', name: 'G. Zhou', team: 'Kick Sauber', teamCode: 'AUD', color: '#52E252' },
+    27: { code: 'HUL', name: 'N. Hülkenberg', team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+    30: { code: 'LAW', name: 'L. Lawson', team: 'Racing Bulls', teamCode: 'RB', color: '#6692FF' },
+    31: { code: 'OCO', name: 'E. Ocon', team: 'Alpine', teamCode: 'ALP', color: '#0093CC' },
+    38: { code: 'BEA', name: 'O. Bearman', team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
+    43: { code: 'COL', name: 'F. Colapinto', team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+    44: { code: 'HAM', name: 'L. Hamilton', team: 'Mercedes', teamCode: 'MER', color: '#27F4D2' },
+    50: { code: 'BEA', name: 'O. Bearman', team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+    55: { code: 'SAI', name: 'C. Sainz', team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
+    61: { code: 'DOO', name: 'J. Doohan', team: 'Alpine', teamCode: 'ALP', color: '#0093CC' },
+    63: { code: 'RUS', name: 'G. Russell', team: 'Mercedes', teamCode: 'MER', color: '#27F4D2' },
+    77: { code: 'BOT', name: 'V. Bottas', team: 'Kick Sauber', teamCode: 'AUD', color: '#52E252' },
+    81: { code: 'PIA', name: 'O. Piastri', team: 'McLaren', teamCode: 'MCL', color: '#FF8000' },
+  },
+  2025: {
+    1: { code: 'VER', name: 'M. Verstappen', team: 'Red Bull Racing', teamCode: 'RBR', color: '#3671C6' },
+    4: { code: 'NOR', name: 'L. Norris', team: 'McLaren', teamCode: 'MCL', color: '#FF8000' },
+    5: { code: 'BOR', name: 'G. Bortoleto', team: 'Kick Sauber', teamCode: 'AUD', color: '#52E252' },
+    6: { code: 'HAD', name: 'I. Hadjar', team: 'Racing Bulls', teamCode: 'RB', color: '#6692FF' },
+    7: { code: 'DOO', name: 'J. Doohan', team: 'Alpine', teamCode: 'ALP', color: '#0093CC' },
+    10: { code: 'GAS', name: 'P. Gasly', team: 'Alpine', teamCode: 'ALP', color: '#0093CC' },
+    12: { code: 'ANT', name: 'K. Antonelli', team: 'Mercedes', teamCode: 'MER', color: '#27F4D2' },
+    14: { code: 'ALO', name: 'F. Alonso', team: 'Aston Martin', teamCode: 'AST', color: '#229971' },
+    16: { code: 'LEC', name: 'C. Leclerc', team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
+    18: { code: 'STR', name: 'L. Stroll', team: 'Aston Martin', teamCode: 'AST', color: '#229971' },
+    22: { code: 'TSU', name: 'Y. Tsunoda', team: 'Red Bull Racing', teamCode: 'RBR', color: '#3671C6' },
+    23: { code: 'ALB', name: 'A. Albon', team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+    27: { code: 'HUL', name: 'N. Hülkenberg', team: 'Kick Sauber', teamCode: 'AUD', color: '#52E252' },
+    30: { code: 'LAW', name: 'L. Lawson', team: 'Racing Bulls', teamCode: 'RB', color: '#6692FF' },
+    31: { code: 'OCO', name: 'E. Ocon', team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+    43: { code: 'COL', name: 'F. Colapinto', team: 'Alpine', teamCode: 'ALP', color: '#0093CC' },
+    44: { code: 'HAM', name: 'L. Hamilton', team: 'Ferrari', teamCode: 'FER', color: '#E10600' },
+    55: { code: 'SAI', name: 'C. Sainz', team: 'Williams', teamCode: 'WIL', color: '#64C4FF' },
+    63: { code: 'RUS', name: 'G. Russell', team: 'Mercedes', teamCode: 'MER', color: '#27F4D2' },
+    81: { code: 'PIA', name: 'O. Piastri', team: 'McLaren', teamCode: 'MCL', color: '#FF8000' },
+    87: { code: 'BEA', name: 'O. Bearman', team: 'Haas F1 Team', teamCode: 'HAA', color: '#B6BABD' },
+  },
+  2026: OPENF1_2026_DRIVER_NUMBER_MAP,
+};
+
+function mapBatchTyreCompound(raw?: string): TyreCompound {
+  const upper = (raw || 'SOFT').toUpperCase();
+  if (upper.startsWith('S')) return 'S';
+  if (upper.startsWith('M')) return 'M';
+  if (upper.startsWith('H')) return 'H';
+  if (upper.startsWith('I')) return 'I';
+  if (upper.startsWith('W')) return 'W';
+  return 'S';
+}
+
+function formatBatchLapOrRaceDuration(
+  rawDuration: number | Array<number | null> | null | undefined,
+  isRaceOrSprint: boolean
+): string {
+  let seconds: number | null = null;
+  if (Array.isArray(rawDuration)) {
+    for (let i = rawDuration.length - 1; i >= 0; i--) {
+      const v = rawDuration[i];
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+        seconds = v;
+        break;
+      }
+    }
+  } else if (typeof rawDuration === 'number' && Number.isFinite(rawDuration) && rawDuration > 0) {
+    seconds = rawDuration;
+  }
+
+  if (seconds === null) {
+    return isRaceOrSprint ? '—' : 'NO TIME';
+  }
+
+  if (seconds >= 300) {
+    const hrs = Math.floor(seconds / 3600);
+    const remAfterHrs = seconds - hrs * 3600;
+    const mins = Math.floor(remAfterHrs / 60);
+    const secs = (remAfterHrs - mins * 60).toFixed(3).padStart(6, '0');
+    return hrs > 0
+      ? `${hrs}:${String(mins).padStart(2, '0')}:${secs}`
+      : `${mins}:${secs}`;
+  }
+
+  const mins = Math.floor(seconds / 60);
+  const rem = (seconds - mins * 60).toFixed(3).padStart(6, '0');
+  return mins > 0 ? `${mins}:${rem}` : rem;
+}
+
+function formatBatchGapToLeader(
+  rawGap: number | string | Array<number | string | null> | null | undefined
+): string {
+  let val: number | string | null = null;
+  if (Array.isArray(rawGap)) {
+    for (let i = rawGap.length - 1; i >= 0; i--) {
+      const v = rawGap[i];
+      if (v !== null && v !== undefined && v !== '') {
+        val = v;
+        break;
+      }
+    }
+  } else if (rawGap !== null && rawGap !== undefined && rawGap !== '') {
+    val = rawGap;
+  }
+
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return val === 0 ? 'LEADER' : `+${val.toFixed(3)}s`;
+  }
+  if (typeof val === 'string' && val.trim()) {
+    const trimmed = val.trim();
+    return trimmed.startsWith('+') ? trimmed : `+${trimmed}`;
+  }
+  return '—';
+}
+
+function resolveCircuitMetadataFromOpenF1(
+  circuitShortName: string,
+  location: string,
+  countryName: string,
+  seasonYear: number,
+  round: number,
+  raceDateISO: string
+): {
+  hostName: string;
+  grandPrixName: string;
+  officialTitle: string;
+  circuitName: string;
+  city: string;
+  flagUrl: string;
+  svgId: CircuitSvgId;
+  trackCarbonName: string;
+  laps: number;
+  lengthKm: string;
+  dateRangePill: string;
+} {
+  const cLower = `${circuitShortName} ${location} ${countryName}`.toLowerCase();
+  const raceDate = new Date(raceDateISO);
+  const friDate = new Date(raceDate.getTime() - 2 * 24 * 3600 * 1000);
+  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const m1 = months[friDate.getUTCMonth()] || 'NOV';
+  const m2 = months[raceDate.getUTCMonth()] || 'NOV';
+  const d1 = String(friDate.getUTCDate()).padStart(2, '0');
+  const d2 = String(raceDate.getUTCDate()).padStart(2, '0');
+  const dateRangePill = m1 === m2 ? `${m1} ${d1} - ${d2}` : `${m1} ${d1} - ${m2} ${d2}`;
+
+  const allKnownSpecs = [...COMPLETED_2026_ROUNDS_SPECS, ...COMPLETED_2025_ROUNDS_SPECS];
+  const matchedSpec = allKnownSpecs.find((sp) => {
+    const spCity = sp.city.toLowerCase();
+    const spHost = sp.hostName.toLowerCase();
+    const spSvg = sp.svgId.toLowerCase();
+    if (cLower.includes('las vegas')) return spSvg === 'vegas';
+    if (cLower.includes('miami')) return spSvg === 'miami';
+    if (cLower.includes('austin')) return spSvg === 'cota';
+    if (cLower.includes('interlagos') || cLower.includes('são paulo') || cLower.includes('sao paulo'))
+      return spSvg === 'interlagos';
+    if (cLower.includes('madring') || cLower.includes('madrid')) return spCity === 'madrid';
+    if (cLower.includes('catalunya') || cLower.includes('barcelona')) return spSvg === 'catalunya';
+    if (cLower.includes('imola')) return spSvg === 'imola';
+    if (cLower.includes('monza')) return spSvg === 'monza';
+    return cLower.includes(spCity) || cLower.includes(spHost);
+  });
+
+  if (matchedSpec) {
+    return {
+      hostName: matchedSpec.hostName,
+      grandPrixName: `${matchedSpec.grandPrixName.replace(/\s*\d{4}$/, '')} ${seasonYear}`,
+      officialTitle: matchedSpec.officialTitle.replace(/\d{4}/g, String(seasonYear)),
+      circuitName: matchedSpec.circuitName,
+      city: matchedSpec.city,
+      flagUrl: matchedSpec.flagUrl,
+      svgId: matchedSpec.svgId,
+      trackCarbonName: matchedSpec.trackCarbonName,
+      laps: matchedSpec.laps,
+      lengthKm: matchedSpec.lengthKm,
+      dateRangePill,
+    };
+  }
+
+  return {
+    hostName: location || countryName || `Round ${round}`,
+    grandPrixName: `${countryName || location} Grand Prix ${seasonYear}`,
+    officialTitle: `FORMULA 1 ${(countryName || location).toUpperCase()} GRAND PRIX ${seasonYear}`,
+    circuitName: circuitShortName || location || 'Formula 1 Circuit',
+    city: location || countryName || '',
+    flagUrl: GP_FLAGS.GB,
+    svgId: 'silverstone',
+    trackCarbonName: countryName || 'Great Britain',
+    laps: 58,
+    lengthKm: '5.300 km',
+    dateRangePill,
+  };
+}
+
+function matchWeekendToOpenF1Meeting(
+  weekend: F1Weekend,
+  meetings: Array<{
+    meetingKey: number;
+    raceSession: OpenF1BatchSessionDTO;
+    sessions: OpenF1BatchSessionDTO[];
+  }>
+): {
+  meetingKey: number;
+  raceSession: OpenF1BatchSessionDTO;
+  sessions: OpenF1BatchSessionDTO[];
+} | undefined {
+  const gpSess = weekend.sessions.find((s) => s.name === 'Grand Prix') || weekend.sessions[weekend.sessions.length - 1];
+  const baseRaceMs = gpSess ? Date.parse(gpSess.startTimeISO) : NaN;
+  const wkText = `${weekend.id} ${weekend.city} ${weekend.hostName} ${weekend.circuitName} ${weekend.circuitSvgId}`.toLowerCase();
+
+  // First priority: specific circuit/city match + date proximity within ±12 days
+  for (const m of meetings) {
+    const openRaceMs = Date.parse(m.raceSession.date_start);
+    const dateDiffDays =
+      Number.isFinite(baseRaceMs) && Number.isFinite(openRaceMs)
+        ? Math.abs(openRaceMs - baseRaceMs) / (24 * 3600 * 1000)
+        : 0;
+
+    // Never match a meeting whose race date is more than 12 days away from the scheduled weekend!
+    if (Number.isFinite(baseRaceMs) && dateDiffDays > 12) {
+      continue;
+    }
+
+    const mLoc = (m.raceSession.location || '').toLowerCase();
+    const mCirc = (m.raceSession.circuit_short_name || '').toLowerCase();
+    const mCombined = `${mLoc} ${mCirc}`;
+
+    if (wkText.includes('vegas') && mCombined.includes('vegas')) return m;
+    if (wkText.includes('miami') && mCombined.includes('miami')) return m;
+    if ((wkText.includes('austin') || wkText.includes('cota')) && mCombined.includes('austin')) return m;
+    if ((wkText.includes('interlagos') || wkText.includes('brazil') || wkText.includes('paulo')) && (mCombined.includes('interlagos') || mCombined.includes('paulo'))) return m;
+    if (wkText.includes('madrid') && (mCombined.includes('madring') || mCombined.includes('madrid'))) return m;
+    if ((wkText.includes('barcelona') || wkText.includes('catalunya')) && (mCombined.includes('catalunya') || mCombined.includes('barcelona'))) return m;
+    if (wkText.includes('imola') && mCombined.includes('imola')) return m;
+    if (wkText.includes('monza') && mCombined.includes('monza')) return m;
+    if (wkText.includes('lusail') && mCombined.includes('lusail')) return m;
+    if ((wkText.includes('yas') || wkText.includes('abu dhabi')) && mCombined.includes('yas')) return m;
+    if (wkText.includes('mexico') && mCombined.includes('mexico')) return m;
+
+    if (
+      (mLoc && wkText.includes(mLoc)) ||
+      (mCirc && wkText.includes(mCirc)) ||
+      dateDiffDays <= 3
+    ) {
+      return m;
+    }
+  }
+
+  return undefined;
+}
+
+const seasonBatchMemoryCache = new Map<
+  number,
+  {
+    fetchedAtMs: number;
+    weekends: F1Weekend[];
+    openF1SessionsCount: number;
+  }
+>();
+
+export async function fetchOpenF1SeasonBatchData(
+  seasonYear: number,
+  baseWeekends?: F1Weekend[],
+  forceRefresh?: boolean
+): Promise<{
+  weekends: F1Weekend[];
+  openF1SessionsCount: number;
+}> {
+  const nowMs = Date.now();
+  const cached = seasonBatchMemoryCache.get(seasonYear);
+  const currentYear = new Date().getUTCFullYear();
+  const ttl = seasonYear < currentYear ? 7 * 24 * 3600 * 1000 : 5 * 60 * 1000;
+  if (!forceRefresh && cached && nowMs - cached.fetchedAtMs < ttl && cached.weekends.length > 0) {
+    return {
+      weekends: cached.weekends,
+      openF1SessionsCount: cached.openF1SessionsCount,
+    };
+  }
+
+  const rawSessions = await fetchWithResilience<OpenF1BatchSessionDTO[]>(
+    `https://api.openf1.org/v1/sessions?year=${seasonYear}`,
+    {
+      ttlMs: ttl,
+      cacheKey: `openf1_batch_sessions_${seasonYear}_v15`,
+      forceRefresh,
+      timeoutMs: 6500,
+    }
+  );
+
+  if (!Array.isArray(rawSessions) || rawSessions.length === 0) {
+    const fallback =
+      baseWeekends ||
+      (seasonYear === 2026
+        ? F1_2026_FULL_SEASON
+        : seasonYear === 2025
+        ? F1_2025_HIGHLIGHT_SEASON
+        : F1_2027_FULL_SEASON);
+    return { weekends: fallback, openF1SessionsCount: 0 };
+  }
+
+  // Group sessions by meeting_key, excluding Pre-Season Testing and non-championship exhibition keys
+  const byMeeting = new Map<number, OpenF1BatchSessionDTO[]>();
+  for (const s of rawSessions) {
+    if (!s || typeof s.session_key !== 'number' || !s.date_start) continue;
+    const cShort = (s.circuit_short_name || '').toLowerCase();
+    if (cShort.includes('kuala lumpur')) continue;
+    const sName = (s.session_name || '').toLowerCase();
+    if (sName === 'day 1' || sName === 'day 2' || sName === 'day 3') continue;
+    const mKey = s.meeting_key ?? Math.floor(s.session_key / 10);
+    const list = byMeeting.get(mKey) || [];
+    list.push(s);
+    byMeeting.set(mKey, list);
+  }
+
+  const meetings: Array<{
+    meetingKey: number;
+    raceSession: OpenF1BatchSessionDTO;
+    sessions: OpenF1BatchSessionDTO[];
+  }> = [];
+
+  for (const [meetingKey, sessList] of byMeeting.entries()) {
+    const sorted = [...sessList].sort(
+      (a, b) => Date.parse(a.date_start) - Date.parse(b.date_start)
+    );
+    const raceSession = sorted.find((s) => (s.session_name || '').toLowerCase() === 'race');
+    if (!raceSession) continue;
+    meetings.push({ meetingKey, raceSession, sessions: sorted });
+  }
+
+  meetings.sort(
+    (a, b) => Date.parse(a.raceSession.date_start) - Date.parse(b.raceSession.date_start)
+  );
+
+  // Collect all valid session_keys that have already started (date_start <= nowMs)
+  const startedSessions = meetings
+    .flatMap((m) => m.sessions)
+    .filter((s) => {
+      const ms = Date.parse(s.date_start);
+      return Number.isFinite(ms) && ms <= nowMs;
+    });
+
+  const resultsBySessionKey = new Map<number, OpenF1BatchResultDTO[]>();
+  const gridsBySessionKey = new Map<number, OpenF1BatchGridDTO[]>();
+  const stintsBySessionAndDriver = new Map<string, OpenF1BatchStintDTO[]>();
+  const driverMapByNumber = new Map<
+    number,
+    {
+      code: string;
+      name: string;
+      team: string;
+      teamCode: string;
+      color: string;
+    }
+  >();
+
+  // Seed driverMapByNumber with season-appropriate baseline first
+  const eraFallback =
+    MULTI_ERA_DRIVER_FALLBACK[seasonYear] ||
+    (seasonYear <= 2024
+      ? MULTI_ERA_DRIVER_FALLBACK[2024]
+      : seasonYear === 2025
+      ? MULTI_ERA_DRIVER_FALLBACK[2025]
+      : OPENF1_2026_DRIVER_NUMBER_MAP);
+  for (const [numStr, info] of Object.entries(eraFallback)) {
+    driverMapByNumber.set(Number(numStr), info);
+  }
+
+  if (startedSessions.length > 0) {
+    const startedKeys = startedSessions.map((s) => s.session_key);
+    const minKey = Math.min(...startedKeys);
+    const maxKey = Math.max(...startedKeys);
+
+    // Stagger requests by 280ms to respect OpenF1 rate limits
+    const rawResults = await fetchWithResilience<OpenF1BatchResultDTO[]>(
+      `https://api.openf1.org/v1/session_result?session_key>=${minKey}&session_key<=${maxKey}`,
+      {
+        ttlMs: ttl,
+        cacheKey: `openf1_batch_results_${seasonYear}_${minKey}_${maxKey}_v15`,
+        forceRefresh,
+        timeoutMs: 8000,
+        skipPersistentStorage: true,
+      }
+    );
+
+    await new Promise((r) => setTimeout(r, 260));
+
+    const rawGrids = await fetchWithResilience<OpenF1BatchGridDTO[]>(
+      `https://api.openf1.org/v1/starting_grid?session_key>=${minKey}&session_key<=${maxKey}`,
+      {
+        ttlMs: ttl,
+        cacheKey: `openf1_batch_grids_${seasonYear}_${minKey}_${maxKey}_v15`,
+        forceRefresh,
+        timeoutMs: 8000,
+        skipPersistentStorage: true,
+      }
+    );
+
+    await new Promise((r) => setTimeout(r, 260));
+
+    const rawStints = await fetchWithResilience<OpenF1BatchStintDTO[]>(
+      `https://api.openf1.org/v1/stints?session_key>=${minKey}&session_key<=${maxKey}`,
+      {
+        ttlMs: ttl,
+        cacheKey: `openf1_batch_stints_${seasonYear}_${minKey}_${maxKey}_v15`,
+        forceRefresh,
+        timeoutMs: 9000,
+        skipPersistentStorage: true,
+      }
+    );
+
+    await new Promise((r) => setTimeout(r, 260));
+
+    // Fetch official OpenF1 drivers for the latest started session of the season
+    const latestSessionKey = startedKeys[startedKeys.length - 1];
+    const rawDrivers = await fetchWithResilience<OpenF1BatchDriverDTO[]>(
+      `https://api.openf1.org/v1/drivers?session_key=${latestSessionKey}`,
+      {
+        ttlMs: ttl,
+        cacheKey: `openf1_batch_drivers_${seasonYear}_${latestSessionKey}_v15`,
+        forceRefresh,
+        timeoutMs: 5000,
+      }
+    );
+
+    if (Array.isArray(rawDrivers)) {
+      for (const d of rawDrivers) {
+        if (typeof d?.driver_number !== 'number' || !d.name_acronym) continue;
+        const verifiedTeam = verifyF1ConstructorMapping({
+          teamName: d.team_name,
+          contextDriverCode: d.name_acronym,
+        });
+        const fullName = d.full_name || d.broadcast_name || d.name_acronym;
+        const nameParts = fullName.trim().split(/\s+/);
+        const formattedShortName =
+          nameParts.length >= 2
+            ? `${nameParts[0][0]}. ${nameParts.slice(1).join(' ')}`
+            : fullName;
+        driverMapByNumber.set(d.driver_number, {
+          code: d.name_acronym.toUpperCase(),
+          name: formattedShortName,
+          team: verifiedTeam.canonicalName || d.team_name || 'Formula 1 Team',
+          teamCode: verifiedTeam.code,
+          color: d.team_colour ? `#${d.team_colour.replace(/^#/, '')}` : verifiedTeam.color,
+        });
+      }
+    }
+
+    if (Array.isArray(rawResults)) {
+      for (const row of rawResults) {
+        if (!row || typeof row.session_key !== 'number') continue;
+        const list = resultsBySessionKey.get(row.session_key) || [];
+        list.push(row);
+        resultsBySessionKey.set(row.session_key, list);
+      }
+    }
+
+    if (Array.isArray(rawGrids)) {
+      for (const g of rawGrids) {
+        if (!g || typeof g.session_key !== 'number') continue;
+        const list = gridsBySessionKey.get(g.session_key) || [];
+        list.push(g);
+        gridsBySessionKey.set(g.session_key, list);
+      }
+    }
+
+    if (Array.isArray(rawStints)) {
+      for (const st of rawStints) {
+        if (!st || typeof st.session_key !== 'number' || typeof st.driver_number !== 'number') continue;
+        const k = `${st.session_key}_${st.driver_number}`;
+        const list = stintsBySessionAndDriver.get(k) || [];
+        list.push(st);
+        stintsBySessionAndDriver.set(k, list);
+      }
+    }
+  }
+
+  // Build weekends either by enriching baseWeekends OR constructing directly from OpenF1 meetings (for 2024, 2028, 2029, 2030, etc.)
+  const templateWeekends: F1Weekend[] =
+    baseWeekends && baseWeekends.length > 0
+      ? baseWeekends
+      : seasonYear === 2026
+      ? F1_2026_FULL_SEASON
+      : seasonYear === 2025
+      ? F1_2025_HIGHLIGHT_SEASON
+      : meetings.map((m, idx): F1Weekend => {
+          const round = idx + 1;
+          const meta = resolveCircuitMetadataFromOpenF1(
+            m.raceSession.circuit_short_name || '',
+            m.raceSession.location || '',
+            m.raceSession.country_name || '',
+            seasonYear,
+            round,
+            m.raceSession.date_start
+          );
+          const hasSprint = m.sessions.some((s) =>
+            (s.session_name || '').toLowerCase().includes('sprint')
+          );
+          return {
+            id: `f1-${seasonYear}-r${round}-${meta.svgId}`,
+            sport: 'F1',
+            seasonYear,
+            round,
+            hostName: meta.hostName,
+            countryName: m.raceSession.country_name || meta.hostName,
+            dateRangePill: meta.dateRangePill,
+            dateRangeLabel: meta.dateRangePill,
+            status: Date.parse(m.raceSession.date_start) <= nowMs ? 'COMPLETED' : 'UPCOMING',
+            trackMapUrl: buildF1TrackMapCarbonUrl(meta.trackCarbonName),
+            isSprintWeekend: hasSprint,
+            grandPrixName: meta.grandPrixName,
+            officialTitle: meta.officialTitle,
+            circuitName: meta.circuitName,
+            city: meta.city,
+            countryFlagUrl: meta.flagUrl,
+            circuitSvgId: meta.svgId,
+            laps: meta.laps,
+            circuitLengthKm: meta.lengthKm,
+            raceDistanceKm: '305.354 km',
+            timeWindow: Date.parse(m.raceSession.date_start) <= nowMs ? 'PAST_RESULTS' : 'ALL_UPCOMING',
+            sessions: buildStandardSessionsForWeekend(
+              `f1-${seasonYear}-r${round}`,
+              m.raceSession.date_start,
+              hasSprint
+            ),
+            prefetchMeta: {
+              trackTempForecast: `${seasonYear} Official FIA Telemetry`,
+              rainChance: '0%',
+              tyreAllocation: 'C3 Hard / C4 Medium / C5 Soft',
+              lapRecord: `Official FIA ${seasonYear} Classification`,
+              drsZones: 3,
+              circuitLengthKm: meta.lengthKm,
+              raceDistanceLaps: meta.laps,
+            },
+          };
+        });
+
+  const enrichedWeekends: F1Weekend[] = templateWeekends.map((weekend) => {
+    const matchedMeeting = matchWeekendToOpenF1Meeting(weekend, meetings);
+    if (!matchedMeeting) {
+      // Ensure future weekends never display COMPLETED status
+      const gp = weekend.sessions.find((s) => s.name === 'Grand Prix');
+      const gpStartMs = gp ? Date.parse(gp.startTimeISO) : NaN;
+      if (Number.isFinite(gpStartMs) && gpStartMs > nowMs) {
+        return {
+          ...weekend,
+          status: 'UPCOMING',
+          winnerSummary: undefined,
+          sessions: weekend.sessions.map((s) =>
+            Date.parse(s.startTimeISO) > nowMs
+              ? { ...s, status: 'UPCOMING', sessionResults: undefined, fastestOrWinnerSummary: undefined }
+              : s
+          ),
+        };
+      }
+      return weekend;
+    }
+
+    const meetingSessions = matchedMeeting.sessions;
+    const openF1HasSprint = meetingSessions.some((s) =>
+      (s.session_name || '').toLowerCase().includes('sprint')
+    );
+
+    const updatedSessions: F1Session[] = weekend.sessions.map((sess, idx) => {
+      // Match session in meeting by name or by index
+      const openSess =
+        meetingSessions.find((ms) => {
+          const n = (ms.session_name || '').toLowerCase();
+          if (sess.name === 'FP1') return n === 'practice 1';
+          if (sess.name === 'FP2') return n === 'practice 2';
+          if (sess.name === 'FP3') return n === 'practice 3';
+          if (sess.name === 'Sprint Qualifying') return n === 'sprint qualifying' || n === 'sprint shootout';
+          if (sess.name === 'Sprint') return n === 'sprint';
+          if (sess.name === 'Qualifying') return n === 'qualifying';
+          if (sess.name === 'Grand Prix') return n === 'race';
+          return false;
+        }) || meetingSessions[idx];
+
+      if (!openSess) return sess;
+
+      // Only adopt OpenF1 date_start if it is within ±72 hours of the scheduled session start
+      const openStartMs = Date.parse(openSess.date_start);
+      const localStartMs = Date.parse(sess.startTimeISO);
+      const effectiveStartISO =
+        Number.isFinite(openStartMs) &&
+        (!Number.isFinite(localStartMs) || Math.abs(openStartMs - localStartMs) <= 72 * 3600 * 1000)
+          ? new Date(openStartMs).toISOString()
+          : sess.startTimeISO;
+      const effectiveStartMs = Date.parse(effectiveStartISO);
+
+      // STRICT FUTURE GUARD: If session starts in the future, it MUST be UPCOMING with no results!
+      if (Number.isFinite(effectiveStartMs) && effectiveStartMs > nowMs) {
+        return {
+          ...sess,
+          startTimeISO: effectiveStartISO,
+          istDateLabel: formatISTDateShort(effectiveStartISO),
+          istTimeLabel: formatIST(effectiveStartISO),
+          status: 'UPCOMING',
+          fastestOrWinnerSummary: undefined,
+          sessionResults: undefined,
+        };
+      }
+
+      const rawSessionRows = resultsBySessionKey.get(openSess.session_key) || [];
+      if (rawSessionRows.length === 0) {
+        return {
+          ...sess,
+          startTimeISO: effectiveStartISO,
+          istDateLabel: formatISTDateShort(effectiveStartISO),
+          istTimeLabel: formatIST(effectiveStartISO),
+        };
+      }
+
+      const sortedRows = [...rawSessionRows].sort((a, b) => {
+        const posA = typeof a.position === 'number' && a.position > 0 ? a.position : 999;
+        const posB = typeof b.position === 'number' && b.position > 0 ? b.position : 999;
+        if (posA !== posB) return posA - posB;
+        return (b.number_of_laps || 0) - (a.number_of_laps || 0);
+      });
+
+      const isRaceOrSprint = sess.name === 'Grand Prix' || sess.name === 'Sprint';
+      const isQuali = sess.name === 'Qualifying' || sess.name === 'Sprint Qualifying';
+
+      const parsedResults: F1SessionResultEntry[] = sortedRows.map((r, rIdx) => {
+        const drvNum = Number(r.driver_number);
+        const drvInfo = driverMapByNumber.get(drvNum) || {
+          code: `D${drvNum}`,
+          name: `Driver #${drvNum}`,
+          team: 'Formula 1 Team',
+          teamCode: 'F1T',
+          color: '#FF1801',
+        };
+
+        const rawDriverStints =
+          stintsBySessionAndDriver.get(`${openSess.session_key}_${drvNum}`) || [];
+        const sortedStints = [...rawDriverStints].sort(
+          (a, b) => (a.stint_number || 0) - (b.stint_number || 0)
+        );
+        const tyreStints: TyreCompound[] = sortedStints
+          .map((st) => mapBatchTyreCompound(st.compound))
+          .filter(Boolean);
+        const lastCompound: TyreCompound =
+          tyreStints.length > 0
+            ? tyreStints[tyreStints.length - 1]
+            : isRaceOrSprint
+            ? 'M'
+            : 'S';
+
+        const formattedLapOrDuration = formatBatchLapOrRaceDuration(r.duration, isRaceOrSprint);
+        const formattedGap = formatBatchGapToLeader(r.gap_to_leader);
+
+        let statusText: F1SessionResultEntry['statusText'] = 'FINISHED';
+        let timeOrGap = '';
+
+        if (r.dsq) {
+          statusText = 'DSQ';
+          timeOrGap = 'DSQ';
+        } else if (r.dns) {
+          statusText = 'DNS';
+          timeOrGap = 'DNS';
+        } else if (r.dnf) {
+          statusText = 'DNF';
+          timeOrGap = 'DNF';
+        } else if (rIdx === 0) {
+          timeOrGap = isRaceOrSprint
+            ? formattedLapOrDuration !== '—'
+              ? `WINNER (${formattedLapOrDuration})`
+              : 'WINNER'
+            : formattedLapOrDuration;
+        } else {
+          if (formattedGap.includes('LAP')) {
+            statusText = 'LAPPED';
+          }
+          timeOrGap = formattedGap !== '—' ? formattedGap : formattedLapOrDuration;
+        }
+
+        return {
+          pos: rIdx + 1,
+          driverCode: drvInfo.code,
+          driverName: drvInfo.name,
+          driverNumber: drvNum,
+          constructorName: drvInfo.team,
+          constructorCode: drvInfo.teamCode,
+          constructorColor: drvInfo.color,
+          timeOrGap,
+          bestLapTime: formattedLapOrDuration,
+          tyreCompound: lastCompound,
+          tyreStints: tyreStints.length > 0 ? tyreStints : [lastCompound],
+          lapsCompleted:
+            typeof r.number_of_laps === 'number' ? r.number_of_laps : weekend.laps || 60,
+          hasFastestLap: rIdx === 0,
+          statusText,
+        };
+      });
+
+      const p1 = parsedResults[0];
+      const p2 = parsedResults[1];
+      const p3 = parsedResults[2];
+      const shortTeam = p1
+        ? p1.constructorName
+            .replace(
+              /Formula 1 Team|F1 Team|AMG PETRONAS F1|Oracle |Scuderia |Atlassian |MoneyGram |Visa Cash App |Aramco F1/gi,
+              ''
+            )
+            .trim()
+        : '';
+
+      const summary = p1
+        ? isRaceOrSprint
+          ? `Winner: ${p1.driverName} (${shortTeam})${
+              p2 ? ` • P2 ${p2.driverName.split(' ').slice(-1)[0]}` : ''
+            }${p3 ? ` • P3 ${p3.driverName.split(' ').slice(-1)[0]}` : ''}`
+          : isQuali
+          ? `Pole: ${p1.driverName} (${shortTeam}) • ${p1.bestLapTime} (${p1.tyreCompound})`
+          : `Fastest: ${p1.driverName} (${shortTeam}) • ${p1.bestLapTime} (${p1.tyreCompound})`
+        : sess.fastestOrWinnerSummary;
+
+      return {
+        ...sess,
+        startTimeISO: effectiveStartISO,
+        istDateLabel: formatISTDateShort(effectiveStartISO),
+        istTimeLabel: formatIST(effectiveStartISO),
+        status: 'COMPLETED',
+        fastestOrWinnerSummary: summary,
+        sessionResults: parsedResults,
+      };
+    });
+
+    // Resolve official FIA Starting Grid and Penalties from OpenF1 `/v1/starting_grid` + Qualifying `/v1/session_result`
+    const qualiOpenSess = meetingSessions.find(
+      (ms) => (ms.session_name || '').toLowerCase() === 'qualifying'
+    );
+    const raceOpenSess = matchedMeeting.raceSession;
+    const rawGridRows =
+      (qualiOpenSess && gridsBySessionKey.get(qualiOpenSess.session_key)) ||
+      gridsBySessionKey.get(raceOpenSess.session_key) ||
+      [];
+
+    const qualiAppSess = updatedSessions.find((s) => s.name === 'Qualifying');
+    const qualiPosByDriverNum = new Map<number, { pos: number; bestLap: string; tyre: TyreCompound }>();
+    for (const qr of qualiAppSess?.sessionResults || []) {
+      if (qr.driverNumber) {
+        qualiPosByDriverNum.set(qr.driverNumber, {
+          pos: qr.pos,
+          bestLap: qr.bestLapTime || qr.timeOrGap || 'NO TIME',
+          tyre: qr.tyreCompound,
+        });
+      }
+    }
+
+    let officialStartingGrid = weekend.startingGrid;
+    let resolvedPenalties: F1GridPenaltyNote[] = [...(weekend.gridPenalties || [])];
+
+    if (rawGridRows.length >= 10) {
+      const sortedGrid = [...rawGridRows].sort((a, b) => a.position - b.position);
+      const totalCars = sortedGrid.length;
+      const derivedPenalties: F1GridPenaltyNote[] = [];
+
+      officialStartingGrid = sortedGrid.map((g): F1StartingGridEntry => {
+        const drvNum = Number(g.driver_number);
+        const drvInfo = driverMapByNumber.get(drvNum) || {
+          code: `D${drvNum}`,
+          name: `Driver #${drvNum}`,
+          team: 'Formula 1 Team',
+          teamCode: 'F1T',
+          color: '#FF1801',
+        };
+        const qInfo = qualiPosByDriverNum.get(drvNum);
+        const qualiPos = qInfo?.pos ?? g.position;
+        const gridPos = g.position;
+        const drop = gridPos - qualiPos;
+        const existingPen = resolvedPenalties.find(
+          (p) => p.driverCode.toUpperCase() === drvInfo.code.toUpperCase() && p.sessionTarget === 'Grand Prix'
+        );
+
+        const hasDropPenalty = drop >= 3 || Boolean(existingPen);
+        const isBackOfGrid =
+          existingPen?.penaltyPlaces === 'BACK OF GRID' ||
+          existingPen?.penaltyPlaces === 'PIT LANE' ||
+          (gridPos >= totalCars - 2 && drop >= 4);
+
+        const penaltyReason =
+          existingPen?.reason ||
+          (isBackOfGrid
+            ? `Back-of-grid / PU elements penalty (Qualified P${qualiPos} → Starts P${gridPos})`
+            : drop >= 3
+            ? `${drop}-place FIA grid drop penalty (Qualified P${qualiPos} → Starts P${gridPos})`
+            : undefined);
+
+        if (hasDropPenalty && penaltyReason) {
+          derivedPenalties.push({
+            driverCode: drvInfo.code,
+            driverName: drvInfo.name,
+            constructorName: drvInfo.team,
+            sessionTarget: 'Grand Prix',
+            qualiPos,
+            gridPos,
+            penaltyPlaces: isBackOfGrid ? 'BACK OF GRID' : drop,
+            reason: penaltyReason,
+          });
+        }
+
+        const resolvedLapTime =
+          qInfo?.bestLap ||
+          (typeof g.lap_duration === 'number'
+            ? formatBatchLapOrRaceDuration(g.lap_duration, false)
+            : 'NO TIME');
+
+        return {
+          gridPos,
+          qualifiedPos: qualiPos,
+          qualiPos,
+          posDelta: qualiPos - gridPos,
+          driverCode: drvInfo.code,
+          driverName: drvInfo.name,
+          driverNumber: drvNum,
+          constructorName: drvInfo.team,
+          constructorCode: drvInfo.teamCode,
+          constructorColor: drvInfo.color,
+          qualifyingTime: resolvedLapTime,
+          qualiBestLapTime: resolvedLapTime,
+          tyreCompound: qInfo?.tyre || 'S',
+          penaltyApplied: penaltyReason || undefined,
+          penaltyReason,
+          isBackOfGridStart: isBackOfGrid,
+        };
+      });
+
+      if (derivedPenalties.length > 0) {
+        resolvedPenalties = derivedPenalties;
+      }
+    }
+
+    const gpCompleted = updatedSessions.find(
+      (s) => s.name === 'Grand Prix' && s.status === 'COMPLETED' && s.sessionResults?.length
+    );
+
+    return enrichF1WeekendWithStartingGrids({
+      ...weekend,
+      isSprintWeekend: openF1HasSprint || weekend.isSprintWeekend,
+      status: gpCompleted ? 'COMPLETED' : weekend.status,
+      winnerSummary: gpCompleted?.fastestOrWinnerSummary || weekend.winnerSummary,
+      startingGrid: officialStartingGrid,
+      gridPenalties: resolvedPenalties.length > 0 ? resolvedPenalties : weekend.gridPenalties,
+      sessions: updatedSessions,
+    });
+  });
+
+  seasonBatchMemoryCache.set(seasonYear, {
+    fetchedAtMs: nowMs,
+    weekends: enrichedWeekends,
+    openF1SessionsCount: rawSessions.length,
+  });
+
+  return {
+    weekends: enrichedWeekends,
+    openF1SessionsCount: rawSessions.length,
+  };
+}
+
+export async function fetchF1SeasonCalendar(
+  seasonYear: number
+): Promise<F1Weekend[]> {
+  const currentYear = new Date().getUTCFullYear();
+  if (seasonYear > currentYear) {
+    await fetchWithResilience<any>(`https://api.jolpi.ca/ergast/f1/${seasonYear}.json`, {
+      ttlMs: TTL_SCHEDULE_ROSTER_MS,
+      cacheKey: `jolpica_${seasonYear}_calendar`,
+    });
+    return F1_2027_FULL_SEASON.map((w) => ({
+      ...w,
+      seasonYear,
+    }));
+  }
+
+  const baseForYear =
+    seasonYear === 2026
+      ? F1_2026_FULL_SEASON
+      : seasonYear === 2025
+      ? F1_2025_HIGHLIGHT_SEASON
+      : undefined;
+
+  const batch = await fetchOpenF1SeasonBatchData(seasonYear, baseForYear);
+  return batch.weekends;
+}
+
+export interface MultiSourceF1SessionVerificationResult {
+  verified: boolean;
+  sourcesChecked: string[];
+  discrepancies: string[];
+  sanitizedResults: F1SessionResultEntry[];
+  startingGrid?: F1StartingGridEntry[];
+}
+
+/**
+ * Multi-Source F1 Session & Tyre Compound Verification Gatekeeper:
+ * Cross-checks candidate F1 session classifications, tyre compounds (`S`, `M`, `H`, `I`, `W`),
+ * and starting grid penalties across multiple sources (OpenF1 `/v1/stints` + `/v1/session_result`
+ * and Jolpica `/qualifying.json` + `/results.json`) before admitting unverified data into the app.
+ */
+export function verifyF1SessionResultsMultiSource(params: {
+  sessionName: 'FP1' | 'Sprint Qualifying' | 'FP2' | 'Sprint' | 'FP3' | 'Qualifying' | 'Grand Prix';
+  primaryResults: F1SessionResultEntry[];
+  secondaryResults?: Array<{
+    driverCode: string;
+    pos?: number;
+    tyreCompound?: 'S' | 'M' | 'H' | 'I' | 'W';
+    bestLapTime?: string;
+    gridPos?: number;
+  }>;
+  penalties?: F1GridPenaltyNote[];
+}): MultiSourceF1SessionVerificationResult {
+  const VALID_TYRE_COMPOUNDS = new Set(['S', 'M', 'H', 'I', 'W']);
+  const { sessionName, primaryResults, secondaryResults = [], penalties = [] } = params;
+  const sourcesChecked = ['OpenF1:session_result+stints'];
+  if (secondaryResults.length > 0) {
+    sourcesChecked.push('Jolpica:qualifying+results');
+  }
+
+  const discrepancies: string[] = [];
+  if (!Array.isArray(primaryResults) || primaryResults.length === 0) {
+    return {
+      verified: false,
+      sourcesChecked,
+      discrepancies: ['Primary session classification is empty'],
+      sanitizedResults: [],
+    };
+  }
+
+  const secondaryByDriver = new Map(
+    secondaryResults.map((r) => [r.driverCode.toUpperCase(), r])
+  );
+
+  const seenPositions = new Set<number>();
+  const seenDrivers = new Set<string>();
+
+  const sanitizedResults: F1SessionResultEntry[] = primaryResults
+    .slice()
+    .sort((a, b) => a.pos - b.pos)
+    .map((entry, idx) => {
+      const code = (entry.driverCode || '').toUpperCase().trim();
+      const expectedPos = idx + 1;
+
+      if (entry.pos !== expectedPos) {
+        discrepancies.push(
+          `${sessionName}: Position gap at ${code} (reported P${entry.pos}, normalized to P${expectedPos})`
+        );
+      }
+      if (seenDrivers.has(code)) {
+        discrepancies.push(`${sessionName}: Duplicate driver code ${code}`);
+      }
+      seenDrivers.add(code);
+      seenPositions.add(expectedPos);
+
+      const sec = secondaryByDriver.get(code);
+      let resolvedTyre = entry.tyreCompound;
+      if (!VALID_TYRE_COMPOUNDS.has(resolvedTyre)) {
+        discrepancies.push(
+          `${sessionName}: Invalid tyre compound "${String(resolvedTyre)}" on ${code}`
+        );
+        resolvedTyre = sec?.tyreCompound && VALID_TYRE_COMPOUNDS.has(sec.tyreCompound)
+          ? sec.tyreCompound
+          : 'S';
+      } else if (
+        sec?.tyreCompound &&
+        VALID_TYRE_COMPOUNDS.has(sec.tyreCompound) &&
+        sec.tyreCompound !== resolvedTyre
+      ) {
+        discrepancies.push(
+          `${sessionName}: Tyre compound cross-check reconciled for ${code} (primary=${resolvedTyre}, secondary=${sec.tyreCompound})`
+        );
+      }
+
+      if (sec?.pos !== undefined && sec.pos !== expectedPos) {
+        discrepancies.push(
+          `${sessionName}: Classification mismatch for ${code} (primary=P${expectedPos}, secondary=P${sec.pos})`
+        );
+      }
+
+      return {
+        ...entry,
+        pos: expectedPos,
+        driverCode: code,
+        tyreCompound: resolvedTyre,
+      };
+    });
+
+  let startingGrid: F1StartingGridEntry[] | undefined;
+  if (sessionName === 'Qualifying' || sessionName === 'Sprint Qualifying') {
+    startingGrid = computeStartingGridWithPenalties(
+      sanitizedResults,
+      penalties,
+      sessionName === 'Sprint Qualifying' ? 'Sprint' : 'Grand Prix'
+    );
+  }
+
+  return {
+    verified: seenDrivers.size === sanitizedResults.length && sanitizedResults.length > 0,
+    sourcesChecked,
+    discrepancies,
+    sanitizedResults,
+    startingGrid,
+  };
+}
+

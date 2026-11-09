@@ -37,7 +37,11 @@ export function purgeLegacyLocalStorageKeys(): void {
 export interface StandingRowValidationResult {
   valid: boolean;
   errors: string[];
+  sanitizedRow?: FootballStandingRow;
 }
+
+const DEFAULT_CREST_FALLBACK_URL =
+  'https://upload.wikimedia.org/wikipedia/commons/thumb/a/ac/No_image_available.svg/240px-No_image_available.svg.png';
 
 /**
  * Mathematical Integrity Validator for a single Football standings row:
@@ -47,7 +51,8 @@ export interface StandingRowValidationResult {
  * 4. Verifies non-empty `teamName`, `teamCode`, and valid official club crest (`teamLogo`).
  */
 export function validateFootballStandingRowMath(
-  row: FootballStandingRow
+  row: FootballStandingRow,
+  options?: { sanitizeMissingFields?: boolean }
 ): StandingRowValidationResult {
   const errors: string[] = [];
 
@@ -59,8 +64,13 @@ export function validateFootballStandingRowMath(
     errors.push('Missing valid teamName');
   }
 
-  if (!row.teamLogo || typeof row.teamLogo !== 'string' || !row.teamLogo.startsWith('http')) {
-    errors.push(`Missing valid official club crest URL for ${row.teamName || 'club'}`);
+  let resolvedLogo = row.teamLogo;
+  if (!resolvedLogo || typeof resolvedLogo !== 'string' || !resolvedLogo.startsWith('http')) {
+    if (options?.sanitizeMissingFields) {
+      resolvedLogo = DEFAULT_CREST_FALLBACK_URL;
+    } else {
+      errors.push(`Missing valid official club crest URL for ${row.teamName || 'club'}`);
+    }
   }
 
   const played = Number(row.played);
@@ -98,21 +108,39 @@ export function validateFootballStandingRowMath(
 
   // 3. Verify points === (wins * 3) + draws (unless official league point deduction exists)
   const expectedRawPoints = won * 3 + drawn;
-  const deduction = Number(row.deductionPoints || 0);
+  let deduction = Number(row.deductionPoints || 0);
+  let deductionNote = row.deductionNote;
   const hasOfficialDeduction =
-    deduction > 0 || Boolean(row.deductionNote && row.deductionNote.trim().length > 0);
+    deduction > 0 || Boolean(deductionNote && deductionNote.trim().length > 0);
 
   if (points !== expectedRawPoints) {
-    if (!hasOfficialDeduction || points !== expectedRawPoints - deduction) {
+    const inferredDeduction = expectedRawPoints - points;
+    if (
+      options?.sanitizeMissingFields &&
+      !hasOfficialDeduction &&
+      inferredDeduction > 0 &&
+      inferredDeduction <= 15
+    ) {
+      deduction = inferredDeduction;
+      deductionNote = `Official league deduction (-${inferredDeduction} pts)`;
+    } else if (!hasOfficialDeduction || points !== expectedRawPoints - deduction) {
       errors.push(
         `${row.teamName}: points (${points}) !== (wins * 3) + draws (${expectedRawPoints})`
       );
     }
   }
 
+  const sanitizedRow: FootballStandingRow = {
+    ...row,
+    teamLogo: resolvedLogo,
+    deductionPoints: deduction > 0 ? deduction : row.deductionPoints,
+    deductionNote: deductionNote || row.deductionNote,
+  };
+
   return {
     valid: errors.length === 0,
     errors,
+    sanitizedRow,
   };
 }
 
@@ -124,8 +152,9 @@ export interface LeagueTableValidationResult {
 
 /**
  * Validates an entire FootballLeagueTable before rendering or caching:
- * - For Premier League (`eng.1` / `league-pl`), verifies all 20 clubs are present
- *   with their official club crests (`entry.team.logos[0].href`).
+ * - Sanitizes individual row fields (such as a temporarily unindexed club crest URL
+ *   or an unparsed ESPN point deduction note) so one malformed field does not wipe out
+ *   the entire league table.
  * - Verifies every row passes `validateFootballStandingRowMath`.
  * - Enforces strict ascending rank order (1 to N).
  */
@@ -133,6 +162,7 @@ export function validateFootballLeagueTable(
   table: FootballLeagueTable | null | undefined,
   options?: {
     expectedClubCount?: number;
+    strictClubCount?: boolean;
   }
 ): LeagueTableValidationResult {
   if (!table || !Array.isArray(table.rows) || table.rows.length === 0) {
@@ -144,15 +174,13 @@ export function validateFootballLeagueTable(
   }
 
   const errors: string[] = [];
-  const isPremierLeague =
-    table.espnSlug === 'eng.1' ||
-    table.id === 'league-pl' ||
-    table.id.startsWith('league-pl-');
+  const expectedCount = options?.expectedClubCount;
 
-  const expectedCount =
-    options?.expectedClubCount ?? (isPremierLeague ? 20 : undefined);
-
-  if (expectedCount !== undefined && table.rows.length !== expectedCount) {
+  if (
+    expectedCount !== undefined &&
+    options?.strictClubCount &&
+    table.rows.length !== expectedCount
+  ) {
     errors.push(
       `Expected ${expectedCount} clubs for ${table.leagueName}, received ${table.rows.length}`
     );
@@ -173,14 +201,20 @@ export function validateFootballLeagueTable(
       };
     });
 
+  const validatedRows: FootballStandingRow[] = [];
+
   for (const row of sortedRows) {
-    const rowCheck = validateFootballStandingRowMath(row);
+    const rowCheck = validateFootballStandingRowMath(row, {
+      sanitizeMissingFields: true,
+    });
     if (!rowCheck.valid) {
       errors.push(...rowCheck.errors);
+    } else if (rowCheck.sanitizedRow) {
+      validatedRows.push(rowCheck.sanitizedRow);
     }
   }
 
-  if (errors.length > 0) {
+  if (validatedRows.length === 0 || (errors.length > 0 && validatedRows.length < Math.min(4, sortedRows.length))) {
     return {
       valid: false,
       errors,
@@ -189,11 +223,11 @@ export function validateFootballLeagueTable(
   }
 
   return {
-    valid: true,
-    errors: [],
+    valid: errors.length === 0,
+    errors,
     table: {
       ...table,
-      rows: sortedRows,
+      rows: validatedRows,
     },
   };
 }

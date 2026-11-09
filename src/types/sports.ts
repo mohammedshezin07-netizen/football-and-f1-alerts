@@ -246,6 +246,8 @@ export interface F1SessionResultEntry {
   timeOrGap: string;
   bestLapTime?: string;
   tyreCompound: TyreCompound;
+  tyreStints?: TyreCompound[];
+  statusText?: 'FINISHED' | 'DNF' | 'DNS' | 'DSQ' | 'LAPPED';
   lapsCompleted: number;
   hasFastestLap?: boolean;
 }
@@ -255,16 +257,22 @@ export interface F1GridPenaltyNote {
   driverName?: string;
   constructorName?: string;
   qualifiedPos?: number;
+  qualiPos?: number;
+  gridPos?: number;
   gridDropPositions?: number;
+  penaltyPlaces?: number | 'BACK OF GRID' | 'PIT LANE';
+  backOfGrid?: boolean;
   pitLaneStart?: boolean;
   reason: string;
   targetSession?: 'Grand Prix' | 'Sprint';
+  sessionTarget?: 'Grand Prix' | 'Sprint';
   appliesTo?: 'RACE' | 'SPRINT';
 }
 
 export interface F1StartingGridEntry {
   gridPos: number;
   qualifiedPos: number;
+  qualiPos?: number;
   posDelta: number;
   driverCode: string;
   driverName: string;
@@ -273,9 +281,11 @@ export interface F1StartingGridEntry {
   constructorCode: string;
   constructorColor: string;
   qualifyingTime: string;
+  qualiBestLapTime?: string;
   tyreCompound: TyreCompound;
   penaltyApplied?: string;
   penaltyReason?: string;
+  isBackOfGridStart?: boolean;
   isPitLaneStart?: boolean;
 }
 
@@ -325,7 +335,7 @@ export type CircuitSvgId =
 export interface F1Weekend {
   id: string;
   sport: 'F1';
-  seasonYear?: 2025 | 2026 | 2027;
+  seasonYear?: number;
   round: number;
   hostName?: string;
   countryName?: string;

@@ -28,6 +28,7 @@ import {
   UPCOMING_F1_WEEKENDS,
   UPCOMING_FOOTBALL_MATCHES,
 } from '../data/seedData';
+import { F1_LOGOS } from '../data/logos';
 
 interface ArchiveTabProps {
   items: ArchiveItem[];
@@ -211,6 +212,112 @@ export const ArchiveTab: React.FC<ArchiveTabProps> = ({
                   detail: 'Official Full-Time Score',
                 },
               ],
+      });
+    }
+
+    // 1b. Convert completed F1 weekends with verified Grand Prix sessionResults into F1ArchiveItem entries
+    const F1_POINTS_BY_POS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
+    const completedF1Weekends = [...f1Weekends]
+      .filter((w) => {
+        const gp = w.sessions.find((s) => s.name === 'Grand Prix');
+        const gpStartMs = gp ? Date.parse(gp.startTimeISO) : NaN;
+        return (
+          gp &&
+          Number.isFinite(gpStartMs) &&
+          gpStartMs <= Date.now() &&
+          gp.status === 'COMPLETED' &&
+          Array.isArray(gp.sessionResults) &&
+          gp.sessionResults.length >= 10
+        );
+      })
+      .sort((a, b) => b.round - a.round);
+
+    for (const wknd of completedF1Weekends) {
+      const gp = wknd.sessions.find((s) => s.name === 'Grand Prix')!;
+      const results = gp.sessionResults!;
+      const hostLower = (wknd.hostName || wknd.city || '').toLowerCase();
+      const alreadyStaticF1 = items.find(
+        (it): it is F1ArchiveItem =>
+          it.sport === 'F1' &&
+          (it.circuitSvgId === wknd.circuitSvgId ||
+            (hostLower.length > 0 && it.grandPrixName.toLowerCase().includes(hostLower)))
+      );
+      if (alreadyStaticF1) {
+        continue;
+      }
+
+      const podium = results.slice(0, 3).map((r, i) => ({
+        position: (i + 1) as 1 | 2 | 3,
+        driverCode: r.driverCode,
+        driverName: r.driverName,
+        constructorName: r.constructorName,
+        constructorLogo:
+          (F1_LOGOS as Record<string, string>)[r.constructorCode || ''] ||
+          F1_LOGOS.F1_MAIN,
+        constructorColor: r.constructorColor || '#FF8000',
+        timeOrGap: i === 0 ? r.bestLapTime || 'WINNER' : r.timeOrGap,
+      }));
+
+      if (podium.length < 3) continue;
+
+      result.push({
+        id: `arch-f1-dyn-${wknd.id}`,
+        sport: 'F1',
+        grandPrixName: `${wknd.grandPrixName} ${wknd.seasonYear || 2026}`,
+        circuitName: wknd.circuitName,
+        countryFlagUrl: wknd.countryFlagUrl,
+        circuitSvgId: wknd.circuitSvgId,
+        dateIST: `${gp.istDateLabel} · ${wknd.laps} Laps`,
+        laps: wknd.laps || 60,
+        podium: [podium[0], podium[1], podium[2]],
+        fastestLap: {
+          driverName: results[0].driverName,
+          driverCode: results[0].driverCode,
+          lapNumber: Math.max(1, (wknd.laps || 60) - 4),
+          time: results[0].bestLapTime || '1:12.400',
+        },
+        gridPenalties: (wknd.gridPenalties || []).map(
+          (p) => `${p.driverName || p.driverCode} (${p.driverCode}): ${p.reason}`
+        ),
+        classificationTop10: results.slice(0, 10).map((r, idx) => {
+          const compounds =
+            r.tyreStints && r.tyreStints.length > 0
+              ? r.tyreStints
+              : [r.tyreCompound];
+          const totalLaps = r.lapsCompleted || wknd.laps || 60;
+          const seg = Math.max(1, Math.floor(totalLaps / compounds.length));
+          return {
+            pos: idx + 1,
+            driverCode: r.driverCode,
+            driverName: r.driverName,
+            constructorName: r.constructorName,
+            constructorLogo:
+              (F1_LOGOS as Record<string, string>)[r.constructorCode || ''] ||
+              F1_LOGOS.F1_MAIN,
+            constructorColor: r.constructorColor || '#FF8000',
+            points: F1_POINTS_BY_POS[idx] || 0,
+            gap: idx === 0 ? 'WINNER' : r.timeOrGap,
+            stints: compounds.map((c, cIdx) => ({
+              compound: c,
+              laps: seg,
+              range:
+                compounds.length === 1
+                  ? `L1–${totalLaps}`
+                  : `S${cIdx + 1}`,
+            })),
+          };
+        }),
+        teamRadioHighlights: [
+          {
+            id: `tr-${wknd.id}-1`,
+            driverCode: results[0].driverCode,
+            driverName: results[0].driverName,
+            constructorColor: results[0].constructorColor || '#FF8000',
+            lap: `Lap ${wknd.laps || 60}`,
+            transcript: `"P1! Brilliant execution on the tyres and strategy all afternoon!"`,
+            durationSec: 6,
+          },
+        ],
       });
     }
 

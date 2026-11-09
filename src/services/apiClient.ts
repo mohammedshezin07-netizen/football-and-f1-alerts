@@ -206,19 +206,28 @@ export function evaluateStrictEventStatus(
 
   const durationMs = (durationMinutes ?? 120) * 60 * 1000;
   const endMs = startMs + durationMs;
+  const maxLiveWindowEndMs = Math.max(endMs, startMs + 4 * 60 * 60 * 1000);
 
   // Rule 1: Future events are NEVER live
   if (now < startMs) {
     return 'UPCOMING';
   }
 
-  // Rule 2: Only show LIVE if within active window AND live API confirms 'in'
-  if (now >= startMs && now <= endMs && apiState === 'in') {
+  // Rule 2: Explicitly completed events from API are always FINAL
+  if (apiState === 'post') {
+    return 'FINAL';
+  }
+
+  // Rule 3: Trust apiState === 'in' first within a generous 4-hour window from kickoff
+  // so Extra Time + Penalty Shootouts (~150-160 mins) or weather/red-flag delays
+  // are never prematurely cut off to FINAL while actively in progress.
+  if (now >= startMs && now <= maxLiveWindowEndMs && apiState === 'in') {
     return 'LIVE';
   }
 
-  // If past end time, or explicitly completed
-  if (now > endMs || apiState === 'post') {
+  // Rule 4: Fallback to time-based completion when API state is not actively 'in'
+  // or when the 4-hour maximum window has elapsed.
+  if (now > endMs) {
     return 'FINAL';
   }
 
@@ -291,12 +300,13 @@ export async function fetchWithResilience<T>(
     forceRefresh?: boolean;
     timeoutMs?: number;
     fallbackData?: T;
+    skipPersistentStorage?: boolean;
   }
 ): Promise<T | null> {
   const key = options?.cacheKey || url;
   const ttlMs = options?.ttlMs ?? TTL_LIVE_MS;
   const forceRefresh = options?.forceRefresh ?? false;
-  const timeoutMs = options?.timeoutMs ?? 4500;
+  const timeoutMs = options?.timeoutMs ?? 6000;
 
   // 1. Check in-memory TTL cache first
   if (!forceRefresh) {
@@ -306,8 +316,8 @@ export async function fetchWithResilience<T>(
     }
   }
 
-  // 2. If offline, return persistent localStorage slice or fallback immediately
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+  // 2. If explicitly offline, return persistent localStorage slice or fallback immediately
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     const cached = readPersistentSlice<T>(key);
     return cached ?? options?.fallbackData ?? null;
   }
@@ -342,6 +352,16 @@ export async function fetchWithResilience<T>(
       }
 
       if (response.status === 429) {
+        // Single short backoff retry on HTTP 429 before falling back to cache
+        await new Promise((res) => setTimeout(res, 550));
+        try {
+          response = await attemptFetch(url);
+        } catch {
+          // ignore retry error
+        }
+      }
+
+      if (response.status === 429) {
         // Rate limit recovery: silently fall back to localStorage cache
         setRateLimitStatus(true);
         const cached = readPersistentSlice<T>(key);
@@ -362,7 +382,9 @@ export async function fetchWithResilience<T>(
         cachedAtISO: new Date().toISOString(),
       };
       memoryCache.set(key, item);
-      writePersistentSlice(key, json, ttlMs);
+      if (!options?.skipPersistentStorage) {
+        writePersistentSlice(key, json, ttlMs);
+      }
       return json;
     } catch {
       // Never throw red console errors on network/CORS blockages; serve cached slice cleanly
